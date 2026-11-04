@@ -1,0 +1,27 @@
+[package]
+name = "bellwether-cli"
+description = "Report program status to your terminal with OSC 7501 (Program Status Protocol)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["terminal", "osc", "status", "osc7501", "cli"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "bellwether"
+path = "src/main.rs"
+
+[dependencies]
+bellwether = { path = "../bellwether", version = "0.1.0", features = ["tty"] }
+clap = { version = "4.6", features = ["derive", "wrap_help"] }
+nix = { version = "0.31", features = ["signal", "process"] }
+
+[lints.rust]
+# One commented `unsafe` call lives in src/sys.rs. Everything else is safe.
+unsafe_code = "deny"
+
+[dev-dependencies]
+bellwether = { path = "../bellwether", features = ["tty"] }
+nix = { version = "0.31", features = ["signal", "process"] }

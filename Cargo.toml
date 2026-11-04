@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/bellwether"]
+members = ["crates/bellwether", "crates/bellwether-cli"]
 exclude = ["fuzz"]
 
 [workspace.package]

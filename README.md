@@ -6,7 +6,36 @@ done, or failed, and why.
 
 Spec (rev 0.4): <https://www.superlogical.com/rex/docs/build/program-status>
 
-> Status: Phase 1 (library) is done. The `bellwether` CLI arrives in Phase 2.
+> Status: the library and CLI are done. `run --pty` watch mode is next.
+
+## CLI
+
+```sh
+cargo install --path crates/bellwether-cli
+```
+
+```sh
+bellwether emit working --app deploy --msg "Deploying v2.4.1"
+bellwether emit blocked --kind auth --msg "Password required"
+bellwether emit clear --id us-east            # or just: bellwether emit clear
+
+bellwether run --app restic -- restic backup ~/Documents
+bellwether probe                              # exit 0 supported, 1 not, 3 no tty
+printf '\e]7501;state=working:msg=SGk=\e\\' | bellwether decode
+```
+
+- Reports go to `/dev/tty`, so they work when stdout is piped. With no
+  controlling terminal nothing is written and the exit status is 0. `--stdout`
+  writes reports to stdout instead, for pipes and tests.
+- `BELLWETHER=0` turns off all report output.
+- `run` reports `working`, runs the command with the terminal's stdin, stdout
+  and stderr, then reports `done` (exit 0), `error` (nonzero exit, or killed by
+  a signal), or `idle` (SIGINT/SIGTERM/SIGHUP). It exits with the command's
+  status, and re-raises the command's fatal signal on itself.
+  - Ctrl-C reaches the command once, straight from the terminal: bellwether
+    doesn't forward it.
+  - SIGTERM and SIGHUP sent to bellwether are forwarded.
+  - `run` never probes the terminal.
 
 ## Library
 
@@ -41,7 +70,7 @@ crate has `#![forbid(unsafe_code)]`.
 ## Development
 
 ```sh
-cargo test --workspace --all-features
+cargo test --workspace --all-features    # the SIGINT test needs perl
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo +nightly fuzz run parse      # or: scanner (needs cargo-fuzz)
 ```
@@ -59,7 +88,10 @@ These need a real terminal, so they run by hand.
         `rex.on("terminal.program_status_changed", …)`.
 - [ ] In the Herdr app, the same command shows the pane as working, then done.
 - [ ] `bellwether probe` reports supported in Rex and Herdr, and unsupported
-      in a plain terminal, without hanging.
+      in a plain terminal, without hanging. Check that typing is normal
+      afterwards (echo on, line editing works). With a terminal attached,
+      `cargo test -p bellwether-cli -- --ignored probe` runs the same check
+      automatically.
 - [ ] `printf '\e]7501;state=working:msg=SGk=\e\\' | bellwether decode` prints
       one JSON report.
 

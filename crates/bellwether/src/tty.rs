@@ -48,24 +48,10 @@ impl Tty {
         Tty { fd }
     }
 
-    /// Writes one complete sequence with a single `write(2)` call, so it
-    /// can't interleave with other writers mid-sequence. The call is retried
-    /// only on `EINTR`, when nothing was written. A short write is reported as
-    /// an error rather than finished with a second write.
+    /// Writes one complete sequence with a single `write(2)` call. See
+    /// [`write_sequence`].
     pub fn write_sequence(&self, bytes: &[u8]) -> io::Result<()> {
-        loop {
-            match rustix::io::write(&self.fd, bytes) {
-                Ok(n) if n == bytes.len() => return Ok(()),
-                Ok(n) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::WriteZero,
-                        format!("short write to tty: {n} of {} bytes", bytes.len()),
-                    ));
-                }
-                Err(Errno::INTR) => continue,
-                Err(e) => return Err(e.into()),
-            }
-        }
+        write_sequence(&self.fd, bytes)
     }
 
     /// Runs feature detection (spec: *Feature detection*). It switches the tty
@@ -119,6 +105,27 @@ impl Tty {
             Detection::Pending => Detection::Unsupported,
             other => other.clone(),
         })
+    }
+}
+
+/// Writes `bytes` to `fd` with a single `write(2)` call, so a sequence can't
+/// be interleaved with other writers. The call is retried only on `EINTR`,
+/// when nothing was written. A short write is reported as an error rather
+/// than finished with a second write. Works on any fd: a tty, a pipe, or
+/// stdout.
+pub fn write_sequence<Fd: AsFd>(fd: Fd, bytes: &[u8]) -> io::Result<()> {
+    loop {
+        match rustix::io::write(&fd, bytes) {
+            Ok(n) if n == bytes.len() => return Ok(()),
+            Ok(n) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    format!("short write: {n} of {} bytes", bytes.len()),
+                ));
+            }
+            Err(Errno::INTR) => continue,
+            Err(e) => return Err(e.into()),
+        }
     }
 }
 

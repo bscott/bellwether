@@ -57,3 +57,35 @@ spec says that the brief left out:
 
 - macOS sets `PENDIN` in `c_lflag` when a tty returns to canonical mode while
   input is pending. Termios restore tests ignore that bit.
+
+## Phase 2 (CLI) decisions
+
+- **SIGTERM/SIGHUP deaths always report `idle`.** The brief's rules say
+  "dies from a SIGTERM/SIGHUP *we forwarded*: idle; any other signal: error",
+  but its own test (`sh -c 'kill -TERM $$'`, where nothing was forwarded) expects
+  `idle`. I followed the test: SIGINT, SIGTERM and SIGHUP all count as
+  cancellation. Any other signal reports `error` naming it.
+- **`unsafe` in the CLI.** `crates/bellwether-cli/src/sys.rs` holds two
+  commented `unsafe` calls. Everything else in the workspace is safe, and the
+  library forbids `unsafe`.
+  1. `pre_exec` to restore the signal mask in the child. `std::process::Command`
+     does **not** reset the blocked mask before `exec`, only SIGPIPE's
+     disposition. Without this, the child inherits SIGINT/SIGTERM blocked: Ctrl-C
+     never reaches it and `kill -TERM` is held off. Found by a smoke test that
+     printed the child's mask.
+  2. `signal(sig, SIG_DFL)` before re-raising, because the Rust runtime sets
+     SIGPIPE to `SIG_IGN`.
+- **No signal handlers.** `run` blocks INT/QUIT/TERM/HUP in every thread, and
+  one thread takes them with `sigwait`, dropping INT/QUIT and forwarding
+  TERM/HUP. `probe` blocks the same signals while the tty is raw, so one that
+  arrives is delivered only after termios is restored.
+- **pid reuse window.** nix has no `waitid(WNOWAIT)` on macOS, so a SIGTERM
+  that arrives in the microseconds between `waitpid` returning and forwarding
+  stopping could, in theory, hit a reused pid.
+- **Exit statuses for `run` itself.** 127 when the command isn't found, 126
+  when it can't be executed (shell conventions), 2 for invalid `--msg` /
+  `--done-msg` / `--error-msg` (checked before the command starts).
+- **The SIGINT single-delivery test uses `perl`.** `sh` traps coalesce: the
+  shell's C handler only sets a flag. A mutation check (forwarding SIGINT on
+  purpose) passed with an `sh` counter and fails 5/5 with the perl counter.
+  perl ships on macOS and on GitHub's Ubuntu runners.
