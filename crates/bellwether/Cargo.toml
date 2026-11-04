@@ -1,0 +1,28 @@
+[package]
+name = "bellwether"
+description = "OSC 7501 (Program Status Protocol): encode, parse, scan, and track terminal program status reports"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["terminal", "osc", "escape-sequence", "status", "osc7501"]
+categories = ["command-line-interface", "parser-implementations"]
+
+[features]
+default = []
+serde = ["dep:serde"]
+tty = ["dep:rustix"]
+
+[dependencies]
+base64 = "0.23"
+thiserror = "2"
+serde = { version = "1", features = ["derive"], optional = true }
+rustix = { version = "1.1", features = ["fs", "termios", "event"], optional = true }
+
+[dev-dependencies]
+proptest = "1.12"
+rustix = { version = "1.1", features = ["fs", "termios", "pty"] }
+
+[lints]
+workspace = true
