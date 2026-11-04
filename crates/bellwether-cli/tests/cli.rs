@@ -16,7 +16,15 @@ const BIN: &str = env!("CARGO_BIN_EXE_bellwether");
 
 fn cmd(args: &[&str]) -> Command {
     let mut c = Command::new(BIN);
-    c.args(args).env_remove("BELLWETHER");
+    // Keep the developer's environment out: a surrounding `bellwether run`,
+    // or their own presets file.
+    c.args(args)
+        .env_remove("BELLWETHER")
+        .env_remove("BELLWETHER_PARENT_ID")
+        .env(
+            "XDG_CONFIG_HOME",
+            std::env::temp_dir().join("bellwether-test-no-config"),
+        );
     c
 }
 
@@ -341,6 +349,18 @@ fn run_child_killed_by_other_signal_reports_error_naming_it() {
 /// must reach the child exactly once: the wrapper must not forward it.
 #[test]
 fn sigint_to_process_group_reaches_child_exactly_once() {
+    sigint_exactly_once(&[]);
+}
+
+/// With `--pty` the command is in its own session, so a SIGINT sent to the
+/// wrapper's process group doesn't reach it directly. The wrapper forwards it,
+/// once.
+#[test]
+fn pty_sigint_to_process_group_reaches_child_exactly_once() {
+    sigint_exactly_once(&["--pty"]);
+}
+
+fn sigint_exactly_once(extra: &[&str]) {
     let dir = scratch();
     let (count, ready, stop) = (dir.join("count"), dir.join("ready"), dir.join("stop"));
     // Counts SIGINTs. `sh` traps can't be used: the shell's C handler only
@@ -358,7 +378,10 @@ fn sigint_to_process_group_reaches_child_exactly_once() {
         select(undef, undef, undef, 0.01) until -e $ENV{STOP};
         exit 0;
     "#;
-    let child = cmd(&["run", "--stdout", "--", "perl", "-e", script])
+    let mut args = vec!["run", "--stdout"];
+    args.extend_from_slice(extra);
+    args.extend_from_slice(&["--", "perl", "-e", script]);
+    let child = cmd(&args)
         .env("COUNT", &count)
         .env("READY", &ready)
         .env("STOP", &stop)
@@ -472,4 +495,422 @@ fn probe_answers_without_hanging() {
         Some(1) => assert_eq!(text.trim(), r#"{"supported":false}"#),
         other => panic!("unexpected {other:?}: {text}"),
     }
+}
+
+// ── run --pty ─────────────────────────────────────────────────────────
+
+/// A terminal for the wrapper to run in: the test holds the PTY's master side
+/// and plays the user, so keystrokes, Ctrl-C, resizes and termios restore can
+/// be checked without a real terminal.
+struct FakeTerm {
+    master: std::sync::Arc<std::os::fd::OwnedFd>,
+    /// Kept open so termios can be read after the wrapper exits.
+    secondary: std::os::fd::OwnedFd,
+    out: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+}
+
+impl FakeTerm {
+    fn new(rows: u16, cols: u16) -> FakeTerm {
+        use rustix::fs::{Mode, OFlags};
+        use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
+        let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).unwrap();
+        grantpt(&master).unwrap();
+        unlockpt(&master).unwrap();
+        let name = ptsname(&master, Vec::new()).unwrap();
+        let secondary = rustix::fs::open(
+            name.as_c_str(),
+            OFlags::RDWR | OFlags::NOCTTY,
+            Mode::empty(),
+        )
+        .unwrap();
+        let term = FakeTerm {
+            master: std::sync::Arc::new(master),
+            secondary,
+            out: Default::default(),
+        };
+        term.resize(rows, cols);
+        let (master, out) = (term.master.clone(), term.out.clone());
+        thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = rustix::io::read(&*master, &mut buf) {
+                if n == 0 {
+                    break;
+                }
+                out.lock().unwrap().extend_from_slice(&buf[..n]);
+            }
+        });
+        term
+    }
+
+    fn resize(&self, rows: u16, cols: u16) {
+        let ws = rustix::termios::Winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        rustix::termios::tcsetwinsize(&self.secondary, ws).unwrap();
+    }
+
+    /// Starts `bellwether <args>` with this terminal as stdin, stdout and stderr.
+    fn spawn(&self, args: &[&str]) -> Child {
+        let io = || Stdio::from(self.secondary.try_clone().unwrap());
+        cmd(args)
+            .stdin(io())
+            .stdout(io())
+            .stderr(io())
+            .process_group(0)
+            .spawn()
+            .unwrap()
+    }
+
+    fn type_keys(&self, bytes: &[u8]) {
+        rustix::io::write(&*self.master, bytes).unwrap();
+    }
+
+    fn output(&self) -> Vec<u8> {
+        self.out.lock().unwrap().clone()
+    }
+
+    fn wait_for(&self, needle: &str) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let out = self.output();
+            if out.windows(needle.len()).any(|w| w == needle.as_bytes()) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {needle:?} in {:?}",
+                String::from_utf8_lossy(&out)
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn termios(&self) -> rustix::termios::Termios {
+        rustix::termios::tcgetattr(&self.secondary).unwrap()
+    }
+}
+
+/// Waits for the wrapper, then gives the reader thread a moment to catch the
+/// last output.
+fn finish_in(term: &FakeTerm, mut child: Child) -> (ExitStatus, Vec<u8>) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!(
+                "wrapper did not exit; output: {:?}",
+                String::from_utf8_lossy(&term.output())
+            );
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    thread::sleep(Duration::from_millis(200));
+    (status, term.output())
+}
+
+fn assert_termios_restored(before: &rustix::termios::Termios, after: &rustix::termios::Termios) {
+    // macOS sets PENDIN on return to canonical mode with input pending.
+    let pendin = rustix::termios::LocalModes::PENDIN;
+    assert_eq!(before.local_modes - pendin, after.local_modes - pendin);
+    assert_eq!(before.input_modes, after.input_modes);
+    assert_eq!(before.output_modes, after.output_modes);
+    assert_eq!(before.control_modes, after.control_modes);
+}
+
+fn write_script(dir: &Path, name: &str, body: &str) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path.to_str().unwrap().to_owned()
+}
+
+/// Keys typed at the terminal reach the command through the PTY, the restic
+/// preset turns its output into progress and a `blocked` prompt, and termios
+/// is restored afterwards.
+#[test]
+fn pty_watches_progress_and_password_prompt() {
+    let dir = scratch();
+    let restic = write_script(
+        &dir,
+        "restic",
+        r#"
+printf '[0:01] 10.00%%  1 files\r'; sleep 0.3
+printf '[0:02] 55.50%%  5 files\r'; sleep 0.3
+printf '\nenter password for repository: '
+stty -echo; read pw; stty echo; echo
+echo "got $pw"
+"#,
+    );
+    let term = FakeTerm::new(24, 80);
+    let before = term.termios();
+    let child = term.spawn(&[
+        "run",
+        "--pty",
+        "--stdout",
+        "--msg",
+        "Backing up",
+        "--",
+        &restic,
+    ]);
+    term.wait_for("enter password for repository: ");
+    // Typed keys go through raw: the command, not the wrapper, sees them.
+    thread::sleep(Duration::from_millis(400));
+    term.type_keys(b"hunter2\r");
+    let (status, out) = finish_in(&term, child);
+    assert!(status.success(), "{status:?}");
+    assert!(String::from_utf8_lossy(&out).contains("got hunter2"));
+    assert_termios_restored(&before, &term.termios());
+
+    let lines = decode(&out);
+    let w = r#"{"state":"working","app":"restic""#;
+    assert_eq!(lines[0], format!(r#"{w},"msg":"Backing up"}}"#));
+    assert_eq!(
+        lines[1],
+        format!(r#"{w},"progress":10,"msg":"Backing up"}}"#)
+    );
+    assert_eq!(
+        lines[2],
+        format!(r#"{w},"progress":55,"msg":"Backing up"}}"#)
+    );
+    assert_eq!(
+        lines[3],
+        r#"{"state":"blocked","kind":"auth","app":"restic","progress":55,"msg":"enter password for repository:"}"#
+    );
+    assert_eq!(
+        lines[4],
+        format!(r#"{w},"progress":55,"msg":"Backing up"}}"#)
+    );
+    assert!(
+        lines[5].starts_with(r#"{"state":"done","app":"restic""#),
+        "{lines:?}"
+    );
+    assert_eq!(lines.len(), 6, "{lines:?}");
+}
+
+/// Ctrl-C typed at the terminal is a byte in raw mode. It interrupts the
+/// command through the PTY, and the wrapper reports idle and dies the same way.
+#[test]
+fn pty_typed_ctrl_c_interrupts_command() {
+    let term = FakeTerm::new(24, 80);
+    let before = term.termios();
+    let child = term.spawn(&[
+        "run",
+        "--pty",
+        "--stdout",
+        "--",
+        "sh",
+        "-c",
+        "echo ready; sleep 30",
+    ]);
+    term.wait_for("ready");
+    term.type_keys(b"\x03");
+    let (status, out) = finish_in(&term, child);
+    assert_eq!(status.signal(), Some(Signal::SIGINT as i32), "{status:?}");
+    assert_termios_restored(&before, &term.termios());
+    let lines = decode(&out);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(lines[1].contains(r#""state":"idle""#));
+    assert!(lines[1].contains("Interrupted by SIGINT"));
+}
+
+/// SIGWINCH copies the terminal's new size to the PTY. SIGTERM to the wrapper
+/// reaches the command.
+#[test]
+fn pty_resize_and_sigterm() {
+    let term = FakeTerm::new(30, 100);
+    let script = r#"
+trap 'echo "size=$(stty size)"' WINCH
+echo "size=$(stty size)"
+i=0; while [ $i -lt 300 ]; do sleep 0.05; i=$((i+1)); done
+"#;
+    let child = term.spawn(&["run", "--pty", "--stdout", "--", "sh", "-c", script]);
+    term.wait_for("size=30 100");
+    term.resize(40, 120);
+    kill(Pid::from_raw(child.id() as i32), Signal::SIGWINCH).unwrap();
+    term.wait_for("size=40 120");
+    kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM).unwrap();
+    let (status, out) = finish_in(&term, child);
+    assert_eq!(status.signal(), Some(Signal::SIGTERM as i32), "{status:?}");
+    let lines = decode(&out);
+    assert!(
+        lines.last().unwrap().contains(r#""state":"idle""#),
+        "{lines:?}"
+    );
+}
+
+/// A 7501-aware command reporting on the root record pushes the wrapper's
+/// record to `bellwether`, and both final reports survive.
+#[test]
+fn pty_moves_off_the_record_the_command_reports_on() {
+    let script = format!(
+        "{BIN} emit working --stdout --app kid --msg mine; sleep 0.3; \
+         {BIN} emit done --stdout --app kid --msg kid-done"
+    );
+    let out = output(&[
+        "run", "--pty", "--stdout", "--app", "wrap", "--msg", "m", "--", "sh", "-c", &script,
+    ]);
+    assert!(out.status.success());
+    let lines = decode(&out.stdout);
+    assert_eq!(lines[0], r#"{"state":"working","app":"wrap","msg":"m"}"#);
+    assert_eq!(lines[1], r#"{"state":"working","app":"kid","msg":"mine"}"#);
+    assert_eq!(
+        lines[2],
+        r#"{"state":"working","app":"wrap","id":"bellwether","msg":"m"}"#
+    );
+    assert_eq!(lines[3], r#"{"state":"done","app":"kid","msg":"kid-done"}"#);
+    assert!(lines[4].starts_with(r#"{"state":"done","app":"wrap","id":"bellwether""#));
+    assert_eq!(lines.len(), 5, "{lines:?}");
+
+    // Reports on other records are left alone.
+    let script = format!("{BIN} emit working --stdout --id elsewhere");
+    let out = output(&[
+        "run", "--pty", "--stdout", "--app", "wrap", "--", "sh", "-c", &script,
+    ]);
+    let lines = decode(&out.stdout);
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert!(lines.iter().all(|l| !l.contains(r#""id":"bellwether""#)));
+}
+
+/// `BELLWETHER_PARENT_ID` makes nested runs report on child records.
+#[test]
+fn nested_runs_report_on_child_records() {
+    let inner = format!("echo \"parent=[$BELLWETHER_PARENT_ID]\"; {BIN} run --stdout -- true");
+    for mode in [&[][..], &["--pty"][..]] {
+        let mut args = vec!["run", "--stdout", "--app", "outer"];
+        args.extend_from_slice(mode);
+        args.extend_from_slice(&["--", "sh", "-c", &inner]);
+        let out = output(&args);
+        assert!(out.status.success());
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains("parent=[]"), "{text}");
+        let lines = decode(&out.stdout);
+        let ids: Vec<bool> = lines.iter().map(|l| l.contains(r#""id":"true""#)).collect();
+        assert_eq!(ids, [false, true, true, false], "{mode:?} {lines:?}");
+    }
+    // Under a parent record, `--id` is relative to it.
+    let out = cmd(&["run", "--stdout", "--id", "eu", "--", "true"])
+        .env("BELLWETHER_PARENT_ID", "deploy")
+        .output()
+        .unwrap();
+    let lines = decode(&out.stdout);
+    assert!(
+        lines.iter().all(|l| l.contains(r#""id":"deploy/eu""#)),
+        "{lines:?}"
+    );
+}
+
+/// Presets from the user's file: a question prompt answered from piped
+/// input, and progress with a custom pattern.
+#[test]
+fn pty_user_presets() {
+    let dir = scratch();
+    std::fs::create_dir_all(dir.join("bellwether")).unwrap();
+    std::fs::write(
+        dir.join("bellwether/presets.toml"),
+        r#"
+[deployer]
+progress = 'step [0-9]+ \(([0-9]+)%\)'
+blocked = [{ pattern = '\[y/N\]\s*$', kind = "question", msg = "Confirm deploy?" }]
+"#,
+    )
+    .unwrap();
+    let deployer = write_script(
+        &dir,
+        "deployer",
+        "echo 'step 1 (42%)'; printf 'Continue? [y/N] '; read a; echo \"answer=$a\"",
+    );
+    let pipeline = format!("(sleep 1; echo y) | {BIN} run --pty --stdout -- {deployer}");
+    let out = Command::new("sh")
+        .args(["-c", &pipeline])
+        .env_remove("BELLWETHER_PARENT_ID")
+        .env("XDG_CONFIG_HOME", &dir)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("answer=y"));
+    let lines = decode(&out.stdout);
+    let has = |s: &str| lines.iter().any(|l| l.contains(s));
+    assert!(has(r#""progress":42"#), "{lines:?}");
+    assert!(
+        has(
+            r#"{"state":"blocked","kind":"question","app":"deployer","progress":42,"msg":"Confirm deploy?"}"#
+        ),
+        "{lines:?}"
+    );
+    assert!(lines.last().unwrap().contains(r#""state":"done""#));
+}
+
+#[test]
+fn pty_bad_presets_file_exits_2_without_running() {
+    let dir = scratch();
+    std::fs::create_dir_all(dir.join("bellwether")).unwrap();
+    std::fs::write(dir.join("bellwether/presets.toml"), "[x]\nprogress = '('\n").unwrap();
+    let marker = dir.join("ran");
+    let out = cmd(&[
+        "run",
+        "--pty",
+        "--stdout",
+        "--",
+        "touch",
+        marker.to_str().unwrap(),
+    ])
+    .env("XDG_CONFIG_HOME", &dir)
+    .output()
+    .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("presets.toml: [x].progress: invalid regex"),
+        "{err}"
+    );
+    assert!(out.stdout.is_empty());
+    assert!(!marker.exists());
+
+    let out = output(&["run", "--pty", "--preset", "nope", "--", "true"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("available: restic, sudo"));
+    // --preset only makes sense with --pty.
+    assert_eq!(
+        output(&["run", "--preset", "restic", "--", "true"])
+            .status
+            .code(),
+        Some(2)
+    );
+}
+
+#[test]
+fn pty_exit_codes_and_quiet_mode() {
+    let out = output(&[
+        "run",
+        "--pty",
+        "--stdout",
+        "--",
+        "sh",
+        "-c",
+        "echo hi; exit 3",
+    ]);
+    assert_eq!(out.status.code(), Some(3));
+    let lines = decode(&out.stdout);
+    assert!(lines[1].contains(r#""state":"error""#), "{lines:?}");
+    assert_eq!(
+        output(&["run", "--pty", "--", "no-such-command-xyz"])
+            .status
+            .code(),
+        Some(127)
+    );
+
+    // BELLWETHER=0: output still passes through, no reports.
+    let out = cmd(&["run", "--pty", "--stdout", "--", "echo", "hello"])
+        .env("BELLWETHER", "0")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(out.stdout, b"hello\r\n");
 }

@@ -7,7 +7,7 @@ use bellwether::tty::Tty;
 
 use crate::ProbeArgs;
 use crate::json;
-use crate::sys::Hold;
+use crate::sys::{self, Hold};
 
 pub fn probe(args: ProbeArgs) -> ExitCode {
     let tty = match Tty::open() {
@@ -21,7 +21,7 @@ pub fn probe(args: ProbeArgs) -> ExitCode {
         // meanwhile is delivered after the termios guard inside `probe` has run
         // (on return or unwind), so the terminal is never left raw. Raw mode
         // clears ISIG, so Ctrl-C typed now arrives as a byte, not a signal.
-        let _hold = Hold::new();
+        let _hold = Hold::new(sys::handled());
         tty.probe(args.timeout)
     };
 

@@ -17,9 +17,12 @@ path = "src/main.rs"
 bellwether = { path = "../bellwether", version = "0.1.0", features = ["tty"] }
 clap = { version = "4.6", features = ["derive", "wrap_help"] }
 nix = { version = "0.31", features = ["signal", "process"] }
+regex = "1.13"
+rustix = { version = "1.1", features = ["pty", "termios", "process", "fs", "event", "stdio"] }
+toml = { version = "1.2", default-features = false, features = ["std", "parse", "serde", "preserve_order"] }
 
 [lints.rust]
-# One commented `unsafe` call lives in src/sys.rs. Everything else is safe.
+# The commented `unsafe` calls live in src/sys.rs. Everything else is safe.
 unsafe_code = "deny"
 
 [dev-dependencies]

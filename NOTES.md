@@ -89,3 +89,79 @@ spec says that the brief left out:
   shell's C handler only sets a flag. A mutation check (forwarding SIGINT on
   purpose) passed with an `sh` counter and fails 5/5 with the perl counter.
   perl ships on macOS and on GitHub's Ubuntu runners.
+
+## Phase 3 (`run --pty`) decisions
+
+- **`--id` means the wrapper's record from the start, in both modes.** The
+  brief says "move the wrapper's record to `--id` (default `bellwether`)" when
+  the command reports. Using `--id` only as the move target would give the same
+  flag two meanings. Instead the wrapper reports on `--id` (or the root) as in
+  plain `run`, and moves to the child record `bellwether` beneath it:
+  `bellwether` from the root, `build/bellwether` from `--id build`.
+- **Moving happens only when the command reports on the wrapper's record.**
+  The command's report has then replaced the wrapper's, so nothing needs
+  cleaning up, and the wrapper continues on the child record. Reports on other
+  records (a nested `bellwether run`, a program using its own ids) don't move
+  anything. Moving on *any* report would leave a stale `working` root record
+  behind, because the spec has no way to clear the root alone (`clear` without
+  `id` clears everything). The move happens at most once.
+- **`BELLWETHER_PARENT_ID`.** `run` (both modes) exports its record id, or an
+  empty value for the root. A `run` that finds the variable reports on
+  `parent/<--id>`, else `parent/<app>`, else `parent/bellwether`. An empty
+  parent means the root, so the nested record is just `<app>`. An invalid value
+  is ignored with a warning. If the joined id breaks the id limits (8 levels,
+  128 bytes), the nested run doesn't report at all rather than overwrite its
+  parent's record. `emit` ignores the variable, since the brief scopes it to
+  `run`.
+- **Presets.** TOML tables, one per preset, with `commands`, `always`,
+  `progress` and `blocked = [{ pattern, kind, msg }]`. Unknown keys, bad
+  regexes, a progress regex without a capture group, and messages that break
+  the spec are rejected with exit 2 before the command runs. The built-ins are
+  embedded TOML parsed by the same loader. A user preset replaces a built-in of
+  the same name. The preset is picked by `--preset` or by command basename,
+  looking past wrappers such as `sudo`, `env` and `nice` (`sudo restic backup`
+  gets `restic`). `always` presets apply to every command.
+- **The built-in `sudo` preset is `always = true`.** sudo can prompt from deep
+  inside any command (a build script, a Makefile), so matching it by command
+  name would miss most prompts. Its patterns are anchored to sudo's exact
+  prompts (`[sudo] password for …:` on Linux, `Password:` on macOS).
+- **Prompt detection.** Prompts don't end in a newline, so prompt patterns are
+  matched against the unfinished line when output pauses, and must still match
+  150 ms later. More output on that line cancels the match. `blocked` ends when
+  the user presses Enter or the program finishes the line. Progress patterns are
+  tried at every line end (`\n`, `\r`, cursor movement) and on each pause, so
+  `\r`-redrawn progress bars work. Escape sequences are stripped before
+  matching.
+- **Our reports never split the command's escape sequences.** A report waits
+  until the output so far ends outside an escape sequence or UTF-8 character
+  (at most 250 ms, then it is written anyway). Progress-only updates are
+  limited to one per 200 ms.
+- **SIGINT/SIGQUIT are forwarded in `--pty` mode.** Plain `run` must not
+  forward them, because the terminal already sent them to the child. Under
+  `--pty` the command is in its own session, so a SIGINT sent to bellwether's
+  process group never reaches it otherwise. It is sent to the PTY's foreground
+  process group, as if typed. Typed Ctrl-C is a byte in raw mode and becomes a
+  SIGINT in the PTY. Both paths deliver exactly once, and tests cover each.
+- **A fourth `unsafe` call: a do-nothing SIGWINCH handler.** macOS discards a
+  signal whose default action is "ignore" (SIGWINCH) when it arrives with the
+  default disposition, even while it is blocked and a thread waits in
+  `sigwait`. Linux keeps it pending. Found by the resize test, which timed out
+  on macOS. The handler never runs, because the signal stays blocked in every
+  thread.
+- **Piped stdin.** When stdin isn't a terminal, the PTY's ECHO is turned off
+  (nobody typed the input, so it shouldn't show up in the output), and end of
+  input is passed on as Ctrl-D.
+- **Stdout closing** (`| head`) is treated as a terminal hangup: the command
+  gets SIGHUP.
+- **After the command exits,** output is copied until the PTY reports end of
+  file, or has been quiet for 100 ms (1 s at most), in case a background
+  process keeps it open. Keystrokes are no longer read, so they stay with the
+  shell.
+- **Not handled:** stopping bellwether itself (`kill -STOP` from outside). When
+  it continues, the terminal is whatever the shell left it in. Ctrl-Z typed at
+  the terminal is a byte in raw mode and stops the command inside the PTY, as
+  with `script(1)`.
+- **Linux not yet run.** All PTY tests pass on macOS. Docker wasn't running on
+  this machine, so Linux runs first in Phase 4's CI. Linux differences already
+  handled: EIO instead of EOF on the PTY master, and CLOEXEC for `openpt` set
+  through `fcntl`.

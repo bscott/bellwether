@@ -3,9 +3,12 @@
 mod decode;
 mod json;
 mod output;
+mod preset;
 mod probe;
+mod pty;
 mod run;
 mod sys;
+mod watch;
 
 use std::process::ExitCode;
 use std::time::Duration;
@@ -51,12 +54,26 @@ The final report is:
   idle    it was interrupted (SIGINT) or terminated (SIGTERM, SIGHUP)
 
 Ctrl-C and Ctrl-\\ reach the command directly from the terminal, so they are not
-forwarded again. SIGTERM and SIGHUP sent to bellwether are forwarded. bellwether
-exits with the command's status. If the command was killed by a signal,
-bellwether re-raises that signal on itself.
+forwarded again. (With --pty the command has its own terminal, so SIGINT and
+SIGQUIT sent to bellwether are passed on.) SIGTERM and SIGHUP sent to bellwether
+are forwarded. bellwether exits with the command's status. If the command was
+killed by a signal, bellwether re-raises that signal on itself.
 
-Example:
-  bellwether run --app restic -- restic backup ~/Documents")]
+With --pty the command runs in a pseudoterminal and bellwether watches its
+output. A preset's progress pattern sets the percentage, and its prompt patterns
+report `blocked` (kind auth or question) until you press Enter. Presets come from
+~/.config/bellwether/presets.toml (or $XDG_CONFIG_HOME) and the built-ins
+`restic` and `sudo` (always on). The preset is picked by command name, or with
+--preset. If the command sends its own OSC 7501 report for the record bellwether
+is using, bellwether moves to the child record `bellwether` beneath it.
+
+Nested runs: bellwether sets BELLWETHER_PARENT_ID for the command, and a
+`bellwether run` that finds it reports on a child record (parent/app).
+
+Examples:
+  bellwether run --app restic -- restic backup ~/Documents
+  bellwether run --pty -- restic backup ~/Documents
+  bellwether run --pty --preset restic -- ./backup.sh")]
     Run(RunArgs),
 
     /// Ask the terminal whether it supports OSC 7501
@@ -148,9 +165,19 @@ struct RunArgs {
     #[arg(long)]
     error_msg: Option<String>,
 
-    /// Record id to report on. Omit for the root record
+    /// Record id to report on. Omit for the root record. When nested inside
+    /// another `bellwether run`, it is relative to that run's record
     #[arg(long)]
     id: Option<Id>,
+
+    /// Run the command in a pseudoterminal and watch its output for progress
+    /// and prompts
+    #[arg(long)]
+    pty: bool,
+
+    /// Preset to watch the output with [default: chosen by command name]
+    #[arg(long, value_name = "NAME", requires = "pty")]
+    preset: Option<String>,
 
     #[command(flatten)]
     output: OutputArgs,

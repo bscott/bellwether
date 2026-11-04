@@ -6,7 +6,7 @@ done, or failed, and why.
 
 Spec (rev 0.4): <https://www.superlogical.com/rex/docs/build/program-status>
 
-> Status: the library and CLI are done. `run --pty` watch mode is next.
+> Status: the library, CLI and `run --pty` watch mode are done. Release setup is next.
 
 ## CLI
 
@@ -36,6 +36,45 @@ printf '\e]7501;state=working:msg=SGk=\e\\' | bellwether decode
     doesn't forward it.
   - SIGTERM and SIGHUP sent to bellwether are forwarded.
   - `run` never probes the terminal.
+- Nested runs report beneath their parent. `run` exports
+  `BELLWETHER_PARENT_ID`, and a `bellwether run` that finds it reports on
+  `parent/<app>` instead of the parent's record.
+
+### Watch mode: `run --pty`
+
+```sh
+bellwether run --pty -- restic backup ~/Documents
+bellwether run --pty --preset restic -- ./nightly-backup.sh
+```
+
+The command runs in a pseudoterminal. Keys and output pass through unchanged,
+and window resizes follow. Along the way, bellwether reads the output:
+
+- a preset's **progress** pattern sets `progress` on the `working` report;
+- its **prompt** patterns report `blocked` (`kind=auth` or `question`) until
+  you press Enter;
+- if the command sends its own OSC 7501 report for the record bellwether is
+  using (Claude Code, for example), bellwether moves to the child record
+  `bellwether` so the two don't overwrite each other.
+
+Built-in presets: `restic` (progress and repository password prompt) and
+`sudo` (password prompts, always on). Add your own in
+`~/.config/bellwether/presets.toml` (`$XDG_CONFIG_HOME` is honoured). A preset
+with a built-in's name replaces it.
+
+```toml
+[deployer]
+commands = ["deploy", "deployer"]   # default: the preset's name
+progress = 'step [0-9]+ \(([0-9]+)%\)'   # first capture group = percent
+blocked = [
+  { pattern = '\[y/N\]\s*$', kind = "question" },
+  { pattern = '(?i)passphrase[^:]*:\s*$', kind = "auth", msg = "SSH key passphrase" },
+]
+
+[ssh]
+always = true                        # apply to every command
+blocked = [{ pattern = '(?i)password:\s*$', kind = "auth" }]
+```
 
 ## Library
 
@@ -94,6 +133,14 @@ These need a real terminal, so they run by hand.
       automatically.
 - [ ] `printf '\e]7501;state=working:msg=SGk=\e\\' | bellwether decode` prints
       one JSON report.
+- [ ] Watch mode in Rex or Herdr:
+  - [ ] `bellwether run --pty -- sudo -k true` shows `blocked` (auth) while
+        sudo asks for the password, then `done`;
+  - [ ] `bellwether run --pty -- vim` behaves normally: resizing the window
+        redraws vim, and Ctrl-Z, Ctrl-C and `:q` work. Typing is normal
+        afterwards;
+  - [ ] `bellwether run --pty -- claude` keeps Claude Code's own status, and
+        bellwether's shows up on the child record `bellwether`.
 
 ## License
 
