@@ -161,10 +161,12 @@ spec says that the brief left out:
   it continues, the terminal is whatever the shell left it in. Ctrl-Z typed at
   the terminal is a byte in raw mode and stops the command inside the PTY, as
   with `script(1)`.
-- **Linux not yet run.** All PTY tests pass on macOS. Docker wasn't running on
-  this machine, so Linux runs first in Phase 4's CI. Linux differences already
-  handled: EIO instead of EOF on the PTY master, and CLOEXEC for `openpt` set
-  through `fcntl`.
+- **Linux.** Run in VMPal containers (Debian, Rust 1.99) on aarch64 and on
+  x86_64 under Rosetta: clippy clean, 109 passed and 1 ignored on both, and the
+  PTY, SIGINT and nested tests passed 15 repeats in a row on aarch64. An
+  end-to-end run under `script(1)` reported progress, blocked and done through
+  `/dev/tty`. Handled Linux differences: EIO instead of EOF on the PTY master,
+  and CLOEXEC for `openpt` set through `fcntl`.
 
 ## Phase 4 (release) decisions
 
