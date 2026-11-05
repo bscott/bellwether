@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  check:
+    name: clippy and test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: clippy (all features)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: clippy (no default features)
+        run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+      - name: test
+        run: cargo test --workspace --all-features
+      - name: test (library, no features)
+        run: cargo test -p bellwether --no-default-features
+      - name: rustdoc
+        run: cargo doc --workspace --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  msrv:
+    # Checks the declared rust-version of each crate. Tests are not run here:
+    # dev-dependencies (proptest) need a newer compiler than the library does.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.85"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88"
+      - uses: Swatinem/rust-cache@v2
+      - name: library on 1.85
+        run: cargo +1.85 check -p bellwether --all-features
+      - name: CLI on 1.88
+        run: cargo +1.88 check -p bellwether-cli

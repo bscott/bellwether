@@ -6,6 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 keywords = ["terminal", "osc", "escape-sequence", "status", "osc7501"]
 categories = ["command-line-interface", "parser-implementations"]
 

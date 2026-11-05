@@ -6,11 +6,18 @@ done, or failed, and why.
 
 Spec (rev 0.4): <https://www.superlogical.com/rex/docs/build/program-status>
 
-> Status: the library, CLI and `run --pty` watch mode are done. Release setup is next.
+Runs on macOS and Linux. The library needs Rust 1.85 or later, the CLI 1.88.
 
 ## CLI
 
+Install with Homebrew, the install script, or from source:
+
 ```sh
+brew install bscott/tap/bellwether
+
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/bscott/bellwether/releases/latest/download/bellwether-cli-installer.sh | sh
+
 cargo install --path crates/bellwether-cli
 ```
 

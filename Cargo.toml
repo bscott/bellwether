@@ -9,7 +9,13 @@ edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/bscott/bellwether"
+homepage = "https://github.com/bscott/bellwether"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

@@ -3,9 +3,11 @@ name = "bellwether-cli"
 description = "Report program status to your terminal with OSC 7501 (Program Status Protocol)"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# let-chains (Rust 1.88). The library keeps the workspace minimum.
+rust-version = "1.88"
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 keywords = ["terminal", "osc", "status", "osc7501", "cli"]
 categories = ["command-line-utilities"]
 
@@ -28,3 +30,7 @@ unsafe_code = "deny"
 [dev-dependencies]
 bellwether = { path = "../bellwether", features = ["tty"] }
 nix = { version = "0.31", features = ["signal", "process"] }
+
+[package.metadata.dist]
+# The Homebrew formula is `bellwether`, after the binary, not the package.
+formula = "bellwether"
