@@ -7,6 +7,8 @@ done, or failed, and why.
 Spec (rev 0.4): <https://www.superlogical.com/rex/docs/build/program-status>
 
 Runs on macOS and Linux. The library needs Rust 1.85 or later, the CLI 1.88.
+The prebuilt Linux binaries need glibc 2.34 or later (Ubuntu 22.04, Debian 12,
+RHEL 9 and newer). On older systems, build from source.
 
 ## CLI
 
@@ -129,26 +131,39 @@ leaves open.
 
 ## Manual acceptance checks
 
-These need a real terminal, so they run by hand.
+These need a real terminal, so they run by hand. Ticked items were checked on
+2026-11-05 with Rex 0.0.1793645657 and Herdr.app (herdr-core 0.1.18) on macOS.
 
-- [ ] In a Rex tab, `bellwether run --app demo --msg "Napping" -- sleep 5`:
-  - [ ] shows a spinner on the unfocused tab header, then a done marker;
-  - [ ] is seen by a `rex do --all` Lua script with
-        `rex.on("terminal.program_status_changed", …)`.
-- [ ] In the Herdr app, the same command shows the pane as working, then done.
-- [ ] `bellwether probe` reports supported in Rex and Herdr, and unsupported
-      in a plain terminal, without hanging. Check that typing is normal
-      afterwards (echo on, line editing works). With a terminal attached,
-      `cargo test -p bellwether-cli -- --ignored probe` runs the same check
-      automatically.
-- [ ] `printf '\e]7501;state=working:msg=SGk=\e\\' | bellwether decode` prints
+- In a Rex tab, `bellwether run --app demo --msg "Napping" -- sleep 5`:
+  - [x] Rex reports `program_status_changed` events: `working` "Napping", then
+        `done`, with bellwether as the owner;
+  - [x] a `rex do --all` Lua script with
+        `rex.on("terminal.program_status_changed", …)` sees each report;
+  - [ ] the unfocused tab header shows a spinner, then a done marker (needs a
+        look at the app).
+- [x] In the Herdr app the same command shows the terminal as `working`, then
+      `done`. Herdr gets this from herdr-core, which reads OSC 7501. The
+      `herdr` TUI (0.9.5) does not read OSC 7501 and leaves the pane `unknown`.
+- [x] `bellwether probe` reports supported, with all five states and three
+      kinds, in Rex and in Herdr.
+- [ ] `bellwether probe` reports unsupported in a plain terminal without
+      hanging, and typing is normal afterwards (echo on, line editing works).
+      With a terminal attached, `cargo test -p bellwether-cli -- --ignored
+      probe` runs the same check automatically.
+- [x] `printf '\e]7501;state=working:msg=SGk=\e\\' | bellwether decode` prints
       one JSON report.
-- [ ] Watch mode in Rex or Herdr:
+- [x] Nested runs in Rex and Herdr: `outer` on the root record, `inner` on
+      the child record `inner`, both ending `done`.
+- Watch mode:
+  - [x] A restic-style command in Rex and in Herdr: progress 10 → 55,
+        `blocked` (auth) at the password prompt, `working` after Enter, then
+        100 and `done`. (Herdr refuses to type into a terminal blocked on a
+        password unless forced.)
   - [ ] `bellwether run --pty -- sudo -k true` shows `blocked` (auth) while
-        sudo asks for the password, then `done`;
-  - [ ] `bellwether run --pty -- vim` behaves normally: resizing the window
-        redraws vim, and Ctrl-C and `:q` work. Typing is normal afterwards.
-        (Ctrl-Z doesn't suspend under `--pty`; see NOTES.md);
+        sudo asks for the password, then `done` (needs a real password);
+  - [x] `bellwether run --pty -- vim` in Rex follows resizes (33×57 in a
+        split, 213×57 zoomed, back to 33×57) and Ctrl-C shows vim's own
+        "Type :qa" message. Ctrl-Z doesn't suspend under `--pty`; see NOTES.md;
   - [ ] `bellwether run --pty -- claude` keeps Claude Code's own status, and
         bellwether's shows up on the child record `bellwether`.
 
