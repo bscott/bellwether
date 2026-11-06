@@ -1,0 +1,45 @@
+# Publishes both crates to crates.io. cargo-dist's release workflow calls this
+# (publish-jobs in dist-workspace.toml) after the GitHub release is created.
+#
+# Uses crates.io trusted publishing: no stored token. Each crate's settings on
+# crates.io must list this repository with workflow `release.yml` (crates.io
+# checks the calling workflow, not this file).
+name: Publish crates
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # trusted publishing
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Skip versions already on crates.io
+        id: check
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "bellwether") | .version')
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            -A 'bellwether-release (github.com/bscott/bellwether)' \
+            "https://crates.io/api/v1/crates/bellwether/$version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$code" = 200 ]; then
+            echo "bellwether $version is already on crates.io; nothing to publish"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: rust-lang/crates-io-auth-action@v1
+        if: steps.check.outputs.skip != 'true'
+        id: auth
+      - name: cargo publish
+        if: steps.check.outputs.skip != 'true'
+        run: cargo publish --workspace --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

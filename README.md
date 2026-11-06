@@ -24,8 +24,8 @@ brew install bscott/tap/bellwether
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/bscott/bellwether/releases/latest/download/bellwether-cli-installer.sh | sh
 
-# or from source
-cargo install --git https://github.com/bscott/bellwether bellwether-cli
+# or with cargo
+cargo install bellwether-cli
 ```
 
 ## Use it
@@ -120,12 +120,12 @@ blocked = [{ pattern = '(?i)password:\s*$', kind = "auth" }]
 
 ## Library
 
-The crate is coming to crates.io. Until then, depend on it from git:
-
 ```toml
 [dependencies]
-bellwether = { git = "https://github.com/bscott/bellwether", features = ["tty"] }
+bellwether = { version = "0.1", features = ["tty"] }
 ```
+
+[crates.io](https://crates.io/crates/bellwether) · [docs.rs](https://docs.rs/bellwether)
 
 ### Use case 1: report your program's own status
 

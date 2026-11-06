@@ -224,4 +224,11 @@ only those four functions opt out, so a new `unsafe` elsewhere needs a visible
   C code. The "sshhole" bug (musl `crypt()` returning `"*"` for long
   passwords, fixed in OpenSSH 10.6p2) is in sshd; bellwether never calls
   `crypt()`.
+- **crates.io publishing** runs in CI as a cargo-dist custom publish job
+  (`.github/workflows/publish-crates.yml`), after the GitHub release. It uses
+  crates.io trusted publishing (OIDC), so no token is stored; each crate's
+  crates.io settings list this repository with workflow `release.yml`
+  (crates.io checks the top-level workflow, `workflow_ref`, not the called
+  one). The job skips a version that is already published, so re-running a
+  release is safe.
 - **Minimum Rust:** 1.85 for the library, 1.88 for the CLI (let-chains).
