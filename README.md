@@ -211,6 +211,13 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo +nightly fuzz run parse      # or: scanner (needs cargo-fuzz)
 ```
 
+Releases are automated: release-plz keeps a release PR open with the next
+version and changelog, and merging it tags the release, which builds the
+binaries and publishes everything. Write commits as
+[Conventional Commits](https://www.conventionalcommits.org/) (`fix: …`,
+`feat: …`, `feat!: …` for breaking changes); they decide the version and the
+changelog. See [CHANGELOG.md](CHANGELOG.md).
+
 See [NOTES.md](NOTES.md) for the design: how the implementation reads the
 parts the spec leaves open, and why the CLI works the way it does.
 

@@ -1,0 +1,55 @@
+# Opens and updates the release PR, and tags releases. See release-plz.toml.
+#
+# RELEASE_PLZ_TOKEN is a fine-grained token for this repository (Contents and
+# Pull requests: read and write). The default GITHUB_TOKEN can't be used:
+# PRs and tags it creates don't start other workflows, so CI wouldn't run on
+# the release PR and the tag wouldn't start release.yml.
+name: Release-plz
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  # Tags the version in Cargo.toml if it isn't released yet (after a release
+  # PR is merged). The tag starts release.yml.
+  release:
+    name: Tag release
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'bscott'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+
+  # Opens or updates the PR that bumps the version and the changelog.
+  release-pr:
+    name: Release PR
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'bscott'
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}

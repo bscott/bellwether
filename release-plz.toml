@@ -1,0 +1,23 @@
+# release-plz opens a release PR (version bump + changelog) on every push to
+# main, and pushes the `vX.Y.Z` tag when that PR is merged. The tag starts
+# cargo-dist's release.yml, which builds the binaries, creates the GitHub
+# release, updates the Homebrew tap and publishes both crates to crates.io.
+# So release-plz itself neither publishes nor creates GitHub releases.
+#
+# Both crates share the workspace version, so one tag covers them.
+
+[workspace]
+publish = false            # cargo-dist publishes (trusted publishing)
+git_release_enable = false # cargo-dist creates the GitHub release
+git_tag_enable = false     # only bellwether-cli tags, below
+changelog_update = false   # one changelog, kept by bellwether-cli below
+pr_labels = ["release"]
+
+[[package]]
+name = "bellwether-cli"
+git_tag_enable = true
+git_tag_name = "v{{ version }}"
+changelog_update = true
+changelog_path = "CHANGELOG.md"
+# The changelog also lists changes to the library.
+changelog_include = ["bellwether"]
