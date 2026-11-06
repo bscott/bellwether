@@ -7,6 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme = "README.md"
 keywords = ["terminal", "osc", "escape-sequence", "status", "osc7501"]
 categories = ["command-line-interface", "parser-implementations"]
 
@@ -31,3 +32,7 @@ workspace = true
 [[example]]
 name = "report_status"
 required-features = ["tty"]
+
+[package.metadata.docs.rs]
+# Document the tty and serde APIs too.
+all-features = true

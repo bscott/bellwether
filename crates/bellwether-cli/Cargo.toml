@@ -8,6 +8,7 @@ rust-version = "1.88"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme = "README.md"
 keywords = ["terminal", "osc", "status", "osc7501", "cli"]
 categories = ["command-line-utilities"]
 
