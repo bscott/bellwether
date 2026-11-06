@@ -108,7 +108,6 @@ pub fn run(
         None
     };
 
-    sys::make_waitable(Signal::SIGWINCH);
     let forwarder = Arc::new(Forwarder::start(sys::with(&[Signal::SIGWINCH]), {
         let master = Arc::clone(&master);
         move |sig| match sig {
@@ -206,6 +205,8 @@ impl Session<'_> {
         let mut stdin_open = true;
         let mut master_open = true;
         let mut to_child: Vec<u8> = Vec::new();
+        // The last byte read from stdin, to know whether input ended mid-line.
+        let mut last_in: Option<u8> = None;
         let mut exited: Option<io::Result<ExitStatus>> = None;
         let mut drain_idle: Option<Instant> = None;
         let mut drain_max: Option<Instant> = None;
@@ -287,14 +288,20 @@ impl Session<'_> {
                     Ok(0) => {
                         stdin_open = false;
                         // Piped input ran out: pass the end on, as typing Ctrl-D
-                        // would. A terminal never reads 0 bytes in raw mode.
+                        // would. A terminal never reads 0 bytes in raw mode. In
+                        // canonical mode a Ctrl-D after a partial line only
+                        // sends that line, so a second one is needed for EOF.
                         if !stdin_tty {
                             to_child.push(0x04);
+                            if last_in.is_some_and(|b| b != b'\n') {
+                                to_child.push(0x04);
+                            }
                         }
                     }
                     Ok(n) => {
                         self.watcher.input(&buf[..n]);
                         to_child.extend_from_slice(&buf[..n]);
+                        last_in = Some(buf[n - 1]);
                     }
                     Err(Errno::AGAIN | Errno::INTR) => {}
                     Err(_) => stdin_open = false,

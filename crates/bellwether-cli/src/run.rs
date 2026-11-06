@@ -111,7 +111,12 @@ pub fn run(args: RunArgs) -> ExitCode {
     // Block the signals we take over before spawning any thread, so every
     // thread inherits the mask and only the forwarder's sigwait takes them.
     let hold = Hold::new(match args.pty {
-        true => sys::with(&[Signal::SIGWINCH]),
+        true => {
+            // Before the command starts, so a resize that comes early isn't
+            // discarded (macOS, see sys::make_waitable).
+            sys::make_waitable(Signal::SIGWINCH);
+            sys::with(&[Signal::SIGWINCH])
+        }
         false => sys::handled(),
     });
 
@@ -413,7 +418,7 @@ mod tests {
             (r.record, r.export.as_str()),
             (Some(id("restic")), "restic")
         );
-        // Parent on a record: the app name, else --id, else "bellwether".
+        // Parent on a record: --id, else the app name, else "bellwether".
         let r = resolve_ids(None, Some(&app), env("deploy"));
         assert_eq!(r.record, Some(id("deploy/restic")));
         let r = resolve_ids(Some(id("a/b")), Some(&app), env("deploy"));

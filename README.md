@@ -40,7 +40,10 @@ printf '\e]7501;state=working:msg=SGk=\e\\' | bellwether decode
   a signal), or `idle` (SIGINT/SIGTERM/SIGHUP). It exits with the command's
   status, and re-raises the command's fatal signal on itself.
   - Ctrl-C reaches the command once, straight from the terminal: bellwether
-    doesn't forward it.
+    doesn't forward it. So a SIGINT or SIGQUIT sent to bellwether's pid alone
+    (`kill -INT <pid>`) is ignored. Signal the process group, or use SIGTERM.
+    (Under `--pty` they are forwarded, since the command has its own
+    terminal.)
   - SIGTERM and SIGHUP sent to bellwether are forwarded.
   - `run` never probes the terminal.
 - Nested runs report beneath their parent. `run` exports
@@ -94,7 +97,7 @@ bellwether = "0.1"
 |---|---|
 | `Report`, `ReportBuilder` | Typed reports. `try_build` (strict) or `build_lossy`. `encode(Terminator::St \| Bel)` |
 | `parse(body)` | Receiver rules from the spec: malformed pairs skipped, unknown keys ignored, last value wins, whole report discarded on bad base64, control characters, invalid id or any limit breach |
-| `Scanner` | Incremental finder for OSC 7501 sequences in a byte stream. Handles split chunks, passes every other byte through unchanged, buffers at most 4096 bytes |
+| `Scanner` | Incremental finder for OSC 7501 sequences in a byte stream. Handles split chunks, passes every other byte through unchanged, buffers at most 4097 bytes (the 4096-byte limit plus one byte of look-ahead) |
 | `RecordStore` | Receiver state: replace, subtree `clear`, `app` inheritance, LRU cap of 256, lifetime on process exit / OSC 133 A / RIS, OSC 9;4 mapping rule |
 | `detect` | Query bytes, reply parsing, and a pure `Detector` for the DA1 race |
 | `tty` (feature) | `/dev/tty` writes with a single `write(2)`, and a raw-mode probe that always restores termios |
@@ -144,8 +147,8 @@ These need a real terminal, so they run by hand.
   - [ ] `bellwether run --pty -- sudo -k true` shows `blocked` (auth) while
         sudo asks for the password, then `done`;
   - [ ] `bellwether run --pty -- vim` behaves normally: resizing the window
-        redraws vim, and Ctrl-Z, Ctrl-C and `:q` work. Typing is normal
-        afterwards;
+        redraws vim, and Ctrl-C and `:q` work. Typing is normal afterwards.
+        (Ctrl-Z doesn't suspend under `--pty`; see NOTES.md);
   - [ ] `bellwether run --pty -- claude` keeps Claude Code's own status, and
         bellwether's shows up on the child record `bellwether`.
 

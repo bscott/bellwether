@@ -8,7 +8,8 @@ Approved 2026-11-03. Small additions made during implementation:
 
 Crate `bellwether`. Default features: none. Optional features: `serde`
 (Serialize/Deserialize on the value types) and `tty` (`bellwether::tty`, the only
-module that does I/O or has `unsafe`).
+module that does I/O). The crate has `#![forbid(unsafe_code)]`; `tty` uses
+rustix's safe wrappers.
 
 ```rust
 // ── types.rs ─────────────────────────────── spec: Keys, Records and ids
@@ -97,7 +98,7 @@ pub enum ParseError {           // thiserror; every variant = "report discarded"
 }
 
 // ── scan.rs ───────────────────────────────────── spec: Syntax, Limits
-/// Incremental, allocation-bounded (≤4096 B buffered). It never alters
+/// Incremental, allocation-bounded (≤4097 B buffered: the limit plus one look-ahead byte). It never alters
 /// the stream: anything that isn't a complete, in-limit OSC 7501 sequence
 /// comes out as Bytes, so a pass-through wrapper can forward everything
 /// and only look at the Sequence events.
@@ -155,7 +156,7 @@ pub struct Detector { .. }
 pub enum Detection { Pending, Supported(Support), Unsupported }
 impl Detector { pub fn new() -> Self; pub fn feed(&mut self, input: &[u8]) -> Detection; }
 
-// ── tty.rs (feature = "tty") ─ the only module with unsafe ──────────
+// ── tty.rs (feature = "tty") ─ the only module that does I/O ───────
 pub struct Tty { .. }                         // opens /dev/tty
 impl Tty {
     pub fn open() -> io::Result<Option<Tty>>; // None = no controlling tty

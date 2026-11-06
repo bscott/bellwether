@@ -57,6 +57,9 @@ pub enum Status {
 enum Vt {
     Ground,
     Esc,
+    /// After ESC and an intermediate byte, as in `ESC ( B` (charset) or
+    /// `ESC # 8`, up to the final byte.
+    EscInt,
     Csi,
     /// OSC, DCS, SOS, PM or APC string, up to ST or BEL.
     Str,
@@ -166,12 +169,20 @@ impl Watcher {
                         self.vt = Vt::Csi;
                     }
                     b']' | b'P' | b'X' | b'^' | b'_' => self.vt = Vt::Str,
+                    0x20..=0x2f => self.vt = Vt::EscInt,
                     0x1b => self.vt = Vt::Esc,
                     // RIS: full reset.
                     b'c' => self.end_line(),
                     _ => {}
                 }
             }
+            Vt::EscInt => match b {
+                0x20..=0x2f => {}
+                0x1b => self.vt = Vt::Esc,
+                // The final byte, or CAN/SUB aborting the sequence.
+                0x30..=0x7e | 0x18 | 0x1a => self.vt = Vt::Ground,
+                _ => {}
+            },
             Vt::Csi => match b {
                 0x30..=0x3f => {
                     if self.params.len() < 32 {
@@ -407,6 +418,25 @@ mod tests {
         assert_eq!(w.deadline(), None);
         settle(&mut w, t);
         assert_eq!(w.status(), Status::Working);
+    }
+
+    #[test]
+    fn escape_with_intermediate_is_stripped() {
+        // `tput sgr0` on Linux: designate US-ASCII, then reset attributes.
+        let mut w = watcher();
+        let t = Instant::now();
+        w.output(b"\x1b(", t);
+        assert!(!w.at_boundary());
+        w.output(b"B\x1b[mPassword: ", t);
+        assert!(w.at_boundary());
+        settle(&mut w, t);
+        assert_eq!(
+            w.status(),
+            Status::Blocked {
+                kind: Kind::Auth,
+                msg: "Password:".into()
+            }
+        );
     }
 
     #[test]

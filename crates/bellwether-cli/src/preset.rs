@@ -117,7 +117,9 @@ pub fn select(
         })?),
         // `always` presets are added below anyway; matching them here would
         // hide the preset for the command they wrap (`sudo restic`).
-        None => command_words(argv).find_map(|w| all.iter().find(|p| !p.always && p.applies_to(w))),
+        None => command_words(argv)
+            .into_iter()
+            .find_map(|w| all.iter().find(|p| !p.always && p.applies_to(w))),
     };
     let mut out: Vec<Preset> = main.into_iter().cloned().collect();
     for p in all.iter().filter(|p| p.always) {
@@ -128,36 +130,73 @@ pub fn select(
     Ok(out)
 }
 
-/// Commands that run another command. `sudo -u bob restic backup` is matched
-/// as `sudo`, then `restic`.
-const WRAPPERS: &[&str] = &[
-    "sudo",
-    "doas",
-    "env",
-    "nice",
-    "nohup",
-    "time",
-    "caffeinate",
-    "command",
-    "exec",
+/// Commands that run another command, each with its options that take a
+/// separate argument. `sudo -u bob restic backup` is matched as `restic`.
+const WRAPPERS: &[(&str, &[&str])] = &[
+    (
+        "sudo",
+        &[
+            "-u",
+            "-g",
+            "-h",
+            "-p",
+            "-C",
+            "-D",
+            "-r",
+            "-t",
+            "-U",
+            "-T",
+            "--user",
+            "--group",
+            "--host",
+            "--prompt",
+            "--close-from",
+            "--chdir",
+            "--role",
+            "--type",
+            "--other-user",
+            "--command-timeout",
+        ],
+    ),
+    ("doas", &["-u", "-C"]),
+    (
+        "env",
+        &["-u", "-C", "-S", "--unset", "--chdir", "--split-string"],
+    ),
+    ("nice", &["-n", "--adjustment"]),
+    ("nohup", &[]),
+    ("time", &["-f", "-o", "--format", "--output"]),
+    ("caffeinate", &["-t", "-w"]),
+    ("command", &[]),
+    ("exec", &["-a"]),
 ];
 
-/// The basenames to try against presets: the program, and after a wrapper
-/// such as `sudo` or `env`, the program it runs. Options and `VAR=value` words
-/// are skipped. Option arguments (`sudo -u bob`) are tried too, which is
-/// harmless.
-fn command_words(argv: &[String]) -> impl Iterator<Item = &str> {
-    let mut done = false;
-    argv.iter()
-        .map(|a| basename(a))
-        .filter(|w| !w.starts_with('-') && !w.contains('='))
-        .take_while(move |w| {
-            if done {
-                return false;
+/// The basenames to try against presets: each wrapper such as `sudo` or `env`,
+/// then the program it runs. Options, their arguments and `VAR=value` words
+/// are skipped. An option that the table doesn't know to take an argument
+/// may leave its argument tried as the program, which only fails to match.
+fn command_words(argv: &[String]) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut takes_arg: &[&str] = &[];
+    let mut words = argv.iter().map(String::as_str);
+    while let Some(w) = words.next() {
+        if w.starts_with('-') {
+            if takes_arg.contains(&w) {
+                words.next();
             }
-            done = !WRAPPERS.contains(w);
-            true
-        })
+            continue;
+        }
+        if w.contains('=') {
+            continue;
+        }
+        let w = basename(w);
+        out.push(w);
+        match WRAPPERS.iter().find(|(name, _)| *name == w) {
+            Some((_, opts)) => takes_arg = opts,
+            None => break,
+        }
+    }
+    out
 }
 
 fn basename(s: &str) -> &str {
@@ -317,6 +356,19 @@ mod tests {
         assert_eq!(sel(&["/usr/local/bin/restic"]), "restic,sudo");
         assert_eq!(sel(&["sudo", "-E", "restic", "backup"]), "restic,sudo");
         assert_eq!(sel(&["env", "A=1", "restic"]), "restic,sudo");
+        // Wrapper options with a separate argument.
+        assert_eq!(sel(&["sudo", "-u", "bob", "restic"]), "restic,sudo");
+        assert_eq!(sel(&["sudo", "-ubob", "restic"]), "restic,sudo");
+        assert_eq!(sel(&["sudo", "--user=bob", "restic"]), "restic,sudo");
+        assert_eq!(sel(&["nice", "-n", "5", "restic"]), "restic,sudo");
+        assert_eq!(sel(&["env", "-u", "FOO", "A=1", "restic"]), "restic,sudo");
+        assert_eq!(sel(&["time", "-p", "restic"]), "restic,sudo");
+        assert_eq!(
+            sel(&["sudo", "nice", "-n", "5", "/usr/bin/restic"]),
+            "restic,sudo"
+        );
+        // The program's own arguments are never tried.
+        assert_eq!(sel(&["make", "-C", "restic"]), "sudo");
         assert_eq!(sel(&["make", "restic"]), "sudo");
         assert_eq!(sel(&["ls"]), "sudo");
         let explicit = select(&all, Some("restic"), &argv(&["sh", "-c", "x"])).unwrap();

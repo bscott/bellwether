@@ -593,8 +593,8 @@ impl FakeTerm {
     }
 }
 
-/// Waits for the wrapper, then gives the reader thread a moment to catch the
-/// last output.
+/// Waits for the wrapper, then for the reader thread to catch the last
+/// output.
 fn finish_in(term: &FakeTerm, mut child: Child) -> (ExitStatus, Vec<u8>) {
     let deadline = Instant::now() + Duration::from_secs(15);
     let status = loop {
@@ -610,7 +610,18 @@ fn finish_in(term: &FakeTerm, mut child: Child) -> (ExitStatus, Vec<u8>) {
         }
         thread::sleep(Duration::from_millis(10));
     };
-    thread::sleep(Duration::from_millis(200));
+    // The wrapper's last write is in the PTY by now. Wait until the reader
+    // thread has seen output stop growing, rather than a fixed time.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut seen = term.output().len();
+    loop {
+        thread::sleep(Duration::from_millis(100));
+        let now = term.output().len();
+        if now == seen || Instant::now() > deadline {
+            break;
+        }
+        seen = now;
+    }
     (status, term.output())
 }
 
@@ -913,4 +924,30 @@ fn pty_exit_codes_and_quiet_mode() {
         .unwrap();
     assert!(out.status.success());
     assert_eq!(out.stdout, b"hello\r\n");
+}
+
+#[test]
+fn pty_piped_input_without_trailing_newline_reaches_eof() {
+    for input in [&b"abc"[..], b"abc\n", b"", b"a\nb"] {
+        let mut child = cmd(&["run", "--pty", "--stdout", "--", "cat"])
+            .env("BELLWETHER", "0")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(input).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() > deadline {
+                let _ = child.kill();
+                panic!("cat never saw end of input for {input:?}");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "{input:?}");
+        // The PTY turns \n into \r\n.
+        let want = String::from_utf8_lossy(input).replace('\n', "\r\n");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), want, "{input:?}");
+    }
 }

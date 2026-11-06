@@ -65,9 +65,12 @@ spec says that the brief left out:
   but its own test (`sh -c 'kill -TERM $$'`, where nothing was forwarded) expects
   `idle`. I followed the test: SIGINT, SIGTERM and SIGHUP all count as
   cancellation. Any other signal reports `error` naming it.
-- **`unsafe` in the CLI.** `crates/bellwether-cli/src/sys.rs` holds two
-  commented `unsafe` calls. Everything else in the workspace is safe, and the
-  library forbids `unsafe`.
+- **`unsafe` in the CLI.** `crates/bellwether-cli/src/sys.rs` holds four
+  commented `unsafe` calls (two from this phase, listed here; two more from
+  Phase 3, below). Everything else in the workspace is safe, and the library
+  forbids `unsafe`. The CLI crate denies `unsafe_code` and only the four
+  functions in `sys.rs` opt out, so a new `unsafe` elsewhere needs an
+  explicit `#[allow]` that review would see.
   1. `pre_exec` to restore the signal mask in the child. `std::process::Command`
      does **not** reset the blocked mask before `exec`, only SIGPIPE's
      disposition. Without this, the child inherits SIGINT/SIGTERM blocked: Ctrl-C
@@ -142,6 +145,9 @@ spec says that the brief left out:
   process group never reaches it otherwise. It is sent to the PTY's foreground
   process group, as if typed. Typed Ctrl-C is a byte in raw mode and becomes a
   SIGINT in the PTY. Both paths deliver exactly once, and tests cover each.
+- **A third `unsafe` call: `pre_exec` for `setsid` and `TIOCSCTTY`,** so the
+  command runs in its own session with the PTY as its controlling terminal.
+  Both are plain syscalls, safe between `fork` and `exec`.
 - **A fourth `unsafe` call: a do-nothing SIGWINCH handler.** macOS discards a
   signal whose default action is "ignore" (SIGWINCH) when it arrives with the
   default disposition, even while it is blocked and a thread waits in
@@ -157,10 +163,18 @@ spec says that the brief left out:
   file, or has been quiet for 100 ms (1 s at most), in case a background
   process keeps it open. Keystrokes are no longer read, so they stay with the
   shell.
-- **Not handled:** stopping bellwether itself (`kill -STOP` from outside). When
-  it continues, the terminal is whatever the shell left it in. Ctrl-Z typed at
-  the terminal is a byte in raw mode and stops the command inside the PTY, as
-  with `script(1)`.
+- **SIGINT/SIGQUIT sent by pid in plain `run` are ignored.** They can't be told
+  apart from the Ctrl-C the terminal already sent to the whole process group
+  (macOS has no `sigwaitinfo` to see the sender). Use SIGTERM, or signal the
+  group. Documented in `run --help`.
+- **Not handled: job control under `--pty`.** The command leads its own session
+  and its parent (bellwether) is in another one, so its process group is
+  orphaned, and the kernel discards SIGTSTP/SIGTTIN/SIGTTOU sent to it. Ctrl-Z
+  therefore doesn't suspend the command (vim's Ctrl-Z does nothing), as with
+  `script(1)`. Supporting it would need bellwether to stop itself and resume
+  the command, as a shell does. Also not handled: stopping bellwether itself
+  (`kill -STOP` from outside). When it continues, the terminal is whatever the
+  shell left it in.
 - **Linux.** Run in VMPal containers (Debian, Rust 1.99) on aarch64 and on
   x86_64 under Rosetta: clippy clean, 109 passed and 1 ignored on both, and the
   PTY, SIGINT and nested tests passed 15 repeats in a row on aarch64. An

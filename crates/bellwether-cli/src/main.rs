@@ -54,16 +54,18 @@ The final report is:
   idle    it was interrupted (SIGINT) or terminated (SIGTERM, SIGHUP)
 
 Ctrl-C and Ctrl-\\ reach the command directly from the terminal, so they are not
-forwarded again. (With --pty the command has its own terminal, so SIGINT and
-SIGQUIT sent to bellwether are passed on.) SIGTERM and SIGHUP sent to bellwether
-are forwarded. bellwether exits with the command's status. If the command was
-killed by a signal, bellwether re-raises that signal on itself.
+forwarded again, and a SIGINT or SIGQUIT sent to bellwether's pid alone is
+ignored: signal the process group, or use SIGTERM. (With --pty the command has
+its own terminal, so SIGINT and SIGQUIT sent to bellwether are passed on.)
+SIGTERM and SIGHUP sent to bellwether are forwarded. bellwether exits with the
+command's status. If the command was killed by a signal, bellwether re-raises
+that signal on itself.
 
 With --pty the command runs in a pseudoterminal and bellwether watches its
-output. A preset's progress pattern sets the percentage, and its prompt patterns
-report `blocked` (kind auth or question) until you press Enter. Presets come from
-~/.config/bellwether/presets.toml (or $XDG_CONFIG_HOME) and the built-ins
-`restic` and `sudo` (always on). The preset is picked by command name, or with
+output. A preset's progress pattern sets the percentage, and its prompt
+patterns report `blocked` (kind auth or question) until you press Enter. Presets
+come from ~/.config/bellwether/presets.toml (or $XDG_CONFIG_HOME) and the
+built-ins `restic` and `sudo` (always on). The preset is picked by command name, or with
 --preset. If the command sends its own OSC 7501 report for the record bellwether
 is using, bellwether moves to the child record `bellwether` beneath it.
 
