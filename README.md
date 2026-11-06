@@ -11,28 +11,57 @@ Linux releases come in two builds. The `gnu` build needs glibc 2.34 or later
 (Ubuntu 22.04, Debian 12, RHEL 9 and newer). The `musl` build is a static
 binary that runs on any Linux, including older glibc systems and Alpine.
 
-## CLI
+Terminals that read OSC 7501 today include [Rex](https://www.superlogical.com/rex)
+and the Herdr Mac app. Others ignore the sequences, so reporting is always
+safe.
 
-Install with Homebrew, the install script, or from source:
+## Install
 
 ```sh
 brew install bscott/tap/bellwether
 
+# or the install script (macOS and Linux)
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/bscott/bellwether/releases/latest/download/bellwether-cli-installer.sh | sh
 
-cargo install --path crates/bellwether-cli
+# or from source
+cargo install --git https://github.com/bscott/bellwether bellwether-cli
 ```
+
+## Use it
+
+**Wrap any command.** Its tab shows `working` while it runs, then `done`, or
+`error` with the exit code:
 
 ```sh
-bellwether emit working --app deploy --msg "Deploying v2.4.1"
-bellwether emit blocked --kind auth --msg "Password required"
-bellwether emit clear --id us-east            # or just: bellwether emit clear
-
-bellwether run --app restic -- restic backup ~/Documents
-bellwether probe                              # exit 0 supported, 1 not, 3 no tty
-printf '\e]7501;state=working:msg=SGk=\e\\' | bellwether decode
+bellwether run -- make test
+bellwether run --app restic --msg "Nightly backup" -- restic backup ~/Documents
 ```
+
+**Report from a script.** Each `emit` writes one report:
+
+```sh
+bellwether emit working --app deploy --msg "Deploying v2.4.1" --progress 40
+bellwether emit blocked --app deploy --kind question --msg "Promote to production?"
+bellwether emit done --app deploy --msg "Deployed v2.4.1"
+bellwether emit clear            # remove every record
+```
+
+**Watch the output** for progress and password prompts (see
+[Watch mode](#watch-mode-run---pty)):
+
+```sh
+bellwether run --pty -- restic backup ~/Documents
+```
+
+**Check the terminal**, or see what a program sends:
+
+```sh
+bellwether probe                 # exit 0 supported, 1 not, 3 no terminal
+some-program | bellwether decode # one JSON line per report
+```
+
+### Details
 
 - Reports go to `/dev/tty`, so they work when stdout is piped. With no
   controlling terminal nothing is written and the exit status is 0. `--stdout`
@@ -91,10 +120,75 @@ blocked = [{ pattern = '(?i)password:\s*$', kind = "auth" }]
 
 ## Library
 
+The crate is coming to crates.io. Until then, depend on it from git:
+
 ```toml
 [dependencies]
-bellwether = "0.1"
+bellwether = { git = "https://github.com/bscott/bellwether", features = ["tty"] }
 ```
+
+### Use case 1: report your program's own status
+
+A deploy tool, a backup job or a test runner tells the terminal what it is
+doing, so the user can see it from another tab. `Tty` writes to `/dev/tty`, so
+it works when stdout is piped to a log, and does nothing without a terminal
+(cron, CI).
+
+```rust
+use bellwether::tty::Tty;
+use bellwether::{App, Kind, Progress, Report, State, Terminator};
+
+let tty = Tty::open()?; // None: no controlling terminal
+let send = |r: Report| match &tty {
+    Some(t) => t.write_sequence(&r.encode(Terminator::St)),
+    None => Ok(()),
+};
+let app = App::new("deploy")?;
+
+send(Report::builder(State::Working).app(app.clone())
+    .progress(Progress::new(40).unwrap()).msg("Uploading release").build_lossy())?;
+send(Report::builder(State::Blocked).app(app.clone())
+    .kind(Kind::Question).msg("Promote to production? [y/N]").build_lossy())?;
+send(Report::builder(State::Done).app(app).msg("Deployed v2.4.1").build_lossy())?;
+```
+
+Full program: [`examples/report_status.rs`](crates/bellwether/examples/report_status.rs)
+(`cargo run -p bellwether --features tty --example report_status`).
+
+### Use case 2: track the status of programs you run
+
+A CI log viewer, a test harness or a multiplexer reads a child's output.
+`Scanner` picks the reports out of the byte stream and passes every other byte
+through unchanged. `RecordStore` keeps each record's current status, with the
+spec's rules for replacing, clearing and `app` inheritance.
+
+```rust
+use bellwether::{Change, Event, Message, RecordStore, Scanner};
+
+let mut scanner = Scanner::new();
+let mut store = RecordStore::new();
+
+scanner.feed(&child_output, |event| match event {
+    Event::Bytes(b) => forward(b), // everything else, untouched
+    Event::Sequence { message: Message::Report(Ok(report)), .. } => {
+        for change in store.apply(report) {
+            if let Change::Set(id) = change {
+                let rec = store.get(id.as_ref()).unwrap();
+                println!("{:?} is {}", id, rec.state().as_str());
+            }
+        }
+    }
+    _ => {} // discarded reports, queries, replies
+});
+```
+
+Full program: [`examples/track_status.rs`](crates/bellwether/examples/track_status.rs):
+
+```sh
+bellwether run --stdout -- make test | cargo run -p bellwether --example track_status
+```
+
+### What's in the crate
 
 | Piece | What it does |
 |---|---|
@@ -104,16 +198,6 @@ bellwether = "0.1"
 | `RecordStore` | Receiver state: replace, subtree `clear`, `app` inheritance, LRU cap of 256, lifetime on process exit / OSC 133 A / RIS, OSC 9;4 mapping rule |
 | `detect` | Query bytes, reply parsing, and a pure `Detector` for the DA1 race |
 | `tty` (feature) | `/dev/tty` writes with a single `write(2)`, and a raw-mode probe that always restores termios |
-
-```rust
-use bellwether::{App, Report, State, Terminator};
-
-let bytes = Report::builder(State::Working)
-    .app(App::new("deploy")?)
-    .msg("Deploying v2.4.1")
-    .try_build()?
-    .encode(Terminator::St);
-```
 
 Features: `serde` (Serialize/Deserialize for the value types) and `tty`
 (pulls in `rustix`). The core depends only on `base64` and `thiserror`. The
@@ -127,8 +211,8 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo +nightly fuzz run parse      # or: scanner (needs cargo-fuzz)
 ```
 
-See [NOTES.md](NOTES.md) for how the implementation reads the parts the spec
-leaves open.
+See [NOTES.md](NOTES.md) for the design: how the implementation reads the
+parts the spec leaves open, and why the CLI works the way it does.
 
 ## Manual acceptance checks
 

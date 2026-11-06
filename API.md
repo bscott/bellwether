@@ -1,10 +1,9 @@
-# bellwether library: public API (Phase 1)
+# bellwether library: API overview
 
-Approved 2026-11-03. Small additions made during implementation:
-`ReportBuilder::maybe_id`, `Terminator::as_bytes`, `Scanner::buffered`,
-`Detector::{da1_seen, result}`, `RecordStore::is_empty`, `Tty::from_fd`,
-`detect::parse_reply` re-exported at `bellwether::detect`, `MAX_BODY`, and the
-`limits` constants module. Rustdoc (`cargo doc --open`) is the source of truth.
+A one-page map of the public API. Rustdoc (`cargo doc --open`) is the source of
+truth and covers a few smaller items not listed here (`ReportBuilder::maybe_id`,
+`Terminator::as_bytes`, `Scanner::buffered`, `Detector::{da1_seen, result}`,
+`RecordStore::is_empty`, `Tty::from_fd`, `MAX_BODY` and the `limits` module).
 
 Crate `bellwether`. Default features: none. Optional features: `serde`
 (Serialize/Deserialize on the value types) and `tty` (`bellwether::tty`, the only

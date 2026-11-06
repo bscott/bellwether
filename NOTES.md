@@ -1,23 +1,25 @@
-# Implementation notes
+# Design notes
+
+How bellwether reads the parts of the spec that leave room for choice, and why
+the CLI behaves the way it does.
 
 Spec: Program Status Protocol (OSC 7501), rev 0.4 (2026-10-10),
-<https://www.superlogical.com/rex/docs/build/program-status>, fetched 2026-11-03.
+<https://www.superlogical.com/rex/docs/build/program-status>.
 
-## Brief vs. spec
+## Reading the spec
 
-I found no rule in the brief that contradicts the spec. These are things the
-spec says that the brief left out:
+### Rules that are easy to miss
 
-- The states list in a detection reply excludes `clear`.
-- Programs MUST ignore reply pairs they don't understand.
-- Terminals MUST support at least 64 records. 256 is the cap, and a terminal
-  MAY choose lower limits.
+- The `states` list in a detection reply never includes `clear`.
+- Programs must ignore reply pairs they don't understand.
+- Terminals must support at least 64 records. 256 is the cap, and a terminal
+  may choose a lower one.
 - "Check every pair before touching any stored record": a report is applied
   whole or not at all.
-- ST is defined as exactly `ESC \` or BEL. The 8-bit C1 forms (0x9D OSC,
-  0x9C ST) are not mentioned.
+- ST is exactly `ESC \` or BEL. The 8-bit C1 forms (0x9D OSC, 0x9C ST) are not
+  mentioned.
 
-## Ambiguities and the choices made
+### Open questions and the answers chosen
 
 | Question | Choice |
 |---|---|
@@ -35,190 +37,191 @@ spec says that the brief left out:
 | OSC 9;4 → root record mapping | 0 removes the root record only (not its children). 1 → `working` with progress. 2 → `error`. 3 → `working` with indeterminate progress. 4 (paused) → `working` with progress. |
 | Dropping `idle` on process exit or prompt | Configurable. The default keeps `idle`. |
 
-## Constraint deviations
+## The library
 
-- **`tty` feature dependency.** The brief limits library dependencies to
-  `base64`, `thiserror` and `serde`, but also puts tty/termios code in the
-  library behind `tty`. That module needs a syscall layer, so `tty` pulls in
-  `rustix` (optional, off by default). The core still uses only `base64` and
-  `thiserror`. rustix's wrappers are safe, so the crate has
-  `#![forbid(unsafe_code)]` and no unsafe module.
-- **Signal-safe termios restore.** `Tty::probe` restores termios with a drop
-  guard, which covers errors, early returns and panics. Raw mode clears ISIG,
-  so Ctrl-C arrives as a byte and does not kill the probe. A SIGTERM/SIGHUP
-  from outside during the ≤200 ms probe is left to the CLI's handlers
-  (Phase 2).
-- **Fuzzing.** The `fuzz/` targets type-check on stable. Running them needs
-  nightly and `cargo-fuzz`, which this machine doesn't have, so they haven't
-  been run yet. The proptests cover the same invariants (no panics, input
-  reproduced exactly, bounded buffer).
+- **No I/O in the core.** Encoding, parsing, scanning, the record store and
+  detection are pure, and depend only on `base64` and `thiserror` (plus
+  `serde` behind a feature). Terminal access lives in the optional `tty`
+  module, which needs a syscall layer and so pulls in `rustix`. rustix's
+  wrappers are safe, so the whole crate is `#![forbid(unsafe_code)]`.
+- **`App` and `Id` are typed in the builder.** A lossy id would quietly
+  retarget a report, and the spec forbids falling back to the root record for
+  a bad id. Messages and titles, by contrast, have a lossy builder
+  (`build_lossy`) that strips control characters and truncates on character
+  boundaries.
+- **`Scanner` never alters the stream.** Anything that isn't a complete,
+  in-limit OSC 7501 sequence comes out as bytes, so a pass-through wrapper can
+  forward everything and only act on the sequences. It buffers at most 4097
+  bytes, however long a sequence runs.
+- **Encoding order** is state, kind, app, id, title, progress, msg, the order
+  every spec example uses, so the tests compare encoded bytes against the spec
+  text exactly. Base64 output is padded, as in the examples.
+- **`Tty::probe` restores termios with a drop guard,** which covers errors,
+  early returns and panics. Raw mode clears ISIG, so Ctrl-C arrives as a byte
+  and doesn't kill the probe midway.
 
-## Observed platform behaviour
+## The CLI
 
-- macOS sets `PENDIN` in `c_lflag` when a tty returns to canonical mode while
-  input is pending. Termios restore tests ignore that bit.
+### `run`
 
-## Phase 2 (CLI) decisions
+- **Final state.** Exit 0 reports `done`. A nonzero exit, or death by a signal
+  other than INT/TERM/HUP, reports `error` with the reason. SIGINT, SIGTERM
+  and SIGHUP count as cancellation and report `idle`, whoever sent them.
+- **Exit status.** bellwether exits with the command's status. If the command
+  died by a signal, bellwether resets that signal to its default and re-raises
+  it on itself, so the shell sees the same death. Its own failures follow
+  shell conventions: 127 when the command isn't found, 126 when it can't be
+  executed, 2 for invalid arguments (checked before the command starts).
+- **Signals without handlers.** `run` blocks INT/QUIT/TERM/HUP in every thread,
+  and one thread takes them with `sigwait`. The child gets the original mask
+  back before `exec`: `std::process::Command` resets SIGPIPE's disposition but
+  not the blocked mask, so without this the child would start with SIGINT and
+  SIGTERM blocked.
+- **Ctrl-C is not forwarded.** The terminal already delivers it to the whole
+  foreground process group, so forwarding would deliver it twice. The cost: a
+  SIGINT or SIGQUIT sent to bellwether's pid alone (`kill -INT <pid>`) is
+  ignored, because it can't be told apart from the terminal's (macOS has no
+  `sigwaitinfo` to see the sender). Signal the group, or use SIGTERM. SIGTERM
+  and SIGHUP are forwarded.
+- **pid reuse.** nix has no `waitid(WNOWAIT)` on macOS, so a SIGTERM arriving
+  in the microseconds between `waitpid` returning and forwarding stopping
+  could in theory reach a reused pid.
 
-- **SIGTERM/SIGHUP deaths always report `idle`.** The brief's rules say
-  "dies from a SIGTERM/SIGHUP *we forwarded*: idle; any other signal: error",
-  but its own test (`sh -c 'kill -TERM $$'`, where nothing was forwarded) expects
-  `idle`. I followed the test: SIGINT, SIGTERM and SIGHUP all count as
-  cancellation. Any other signal reports `error` naming it.
-- **`unsafe` in the CLI.** `crates/bellwether-cli/src/sys.rs` holds four
-  commented `unsafe` calls (two from this phase, listed here; two more from
-  Phase 3, below). Everything else in the workspace is safe, and the library
-  forbids `unsafe`. The CLI crate denies `unsafe_code` and only the four
-  functions in `sys.rs` opt out, so a new `unsafe` elsewhere needs an
-  explicit `#[allow]` that review would see.
-  1. `pre_exec` to restore the signal mask in the child. `std::process::Command`
-     does **not** reset the blocked mask before `exec`, only SIGPIPE's
-     disposition. Without this, the child inherits SIGINT/SIGTERM blocked: Ctrl-C
-     never reaches it and `kill -TERM` is held off. Found by a smoke test that
-     printed the child's mask.
-  2. `signal(sig, SIG_DFL)` before re-raising, because the Rust runtime sets
-     SIGPIPE to `SIG_IGN`.
-- **No signal handlers.** `run` blocks INT/QUIT/TERM/HUP in every thread, and
-  one thread takes them with `sigwait`, dropping INT/QUIT and forwarding
-  TERM/HUP. `probe` blocks the same signals while the tty is raw, so one that
-  arrives is delivered only after termios is restored.
-- **pid reuse window.** nix has no `waitid(WNOWAIT)` on macOS, so a SIGTERM
-  that arrives in the microseconds between `waitpid` returning and forwarding
-  stopping could, in theory, hit a reused pid.
-- **Exit statuses for `run` itself.** 127 when the command isn't found, 126
-  when it can't be executed (shell conventions), 2 for invalid `--msg` /
-  `--done-msg` / `--error-msg` (checked before the command starts).
-- **The SIGINT single-delivery test uses `perl`.** `sh` traps coalesce: the
-  shell's C handler only sets a flag. A mutation check (forwarding SIGINT on
-  purpose) passed with an `sh` counter and fails 5/5 with the perl counter.
-  perl ships on macOS and on GitHub's Ubuntu runners.
+### Nested runs
 
-## Phase 3 (`run --pty`) decisions
+`run` exports its record id in `BELLWETHER_PARENT_ID` (empty for the root).
+A `run` that finds it reports on `parent/<--id>`, else `parent/<app>`, else
+`parent/bellwether`; an empty parent means the root, so the record is just
+`<app>`. An invalid value is ignored with a warning. If the joined id would
+break the id limits (8 levels, 128 bytes), the nested run doesn't report at
+all, rather than overwrite its parent's record. `emit` ignores the variable.
 
-- **`--id` means the wrapper's record from the start, in both modes.** The
-  brief says "move the wrapper's record to `--id` (default `bellwether`)" when
-  the command reports. Using `--id` only as the move target would give the same
-  flag two meanings. Instead the wrapper reports on `--id` (or the root) as in
-  plain `run`, and moves to the child record `bellwether` beneath it:
-  `bellwether` from the root, `build/bellwether` from `--id build`.
-- **Moving happens only when the command reports on the wrapper's record.**
-  The command's report has then replaced the wrapper's, so nothing needs
-  cleaning up, and the wrapper continues on the child record. Reports on other
-  records (a nested `bellwether run`, a program using its own ids) don't move
-  anything. Moving on *any* report would leave a stale `working` root record
-  behind, because the spec has no way to clear the root alone (`clear` without
-  `id` clears everything). The move happens at most once.
-- **`BELLWETHER_PARENT_ID`.** `run` (both modes) exports its record id, or an
-  empty value for the root. A `run` that finds the variable reports on
-  `parent/<--id>`, else `parent/<app>`, else `parent/bellwether`. An empty
-  parent means the root, so the nested record is just `<app>`. An invalid value
-  is ignored with a warning. If the joined id breaks the id limits (8 levels,
-  128 bytes), the nested run doesn't report at all rather than overwrite its
-  parent's record. `emit` ignores the variable, since the brief scopes it to
-  `run`.
-- **Presets.** TOML tables, one per preset, with `commands`, `always`,
-  `progress` and `blocked = [{ pattern, kind, msg }]`. Unknown keys, bad
-  regexes, a progress regex without a capture group, and messages that break
-  the spec are rejected with exit 2 before the command runs. The built-ins are
-  embedded TOML parsed by the same loader. A user preset replaces a built-in of
-  the same name. The preset is picked by `--preset` or by command basename,
-  looking past wrappers such as `sudo`, `env` and `nice` (`sudo restic backup`
-  gets `restic`). `always` presets apply to every command.
-- **The built-in `sudo` preset is `always = true`.** sudo can prompt from deep
-  inside any command (a build script, a Makefile), so matching it by command
-  name would miss most prompts. Its patterns are anchored to sudo's exact
-  prompts (`[sudo] password for …:` on Linux, `Password:` on macOS).
+### Watch mode: `run --pty`
+
+- **`--id` means the same thing in both modes:** the record bellwether reports
+  on from the start.
+- **When the command reports for itself.** If the command sends a report for
+  the record bellwether is using (Claude Code does this), bellwether moves to
+  the child record `bellwether` beneath it (`build/bellwether` with
+  `--id build`), once. The command's report has replaced bellwether's, so
+  nothing is left to clean up. Reports on other records don't trigger a move.
+  Moving on *any* report would leave a stale `working` root record behind,
+  because the spec has no way to clear the root alone.
+- **Presets** are TOML tables with `commands`, `always`, `progress` and
+  `blocked = [{ pattern, kind, msg }]`. Unknown keys, bad regexes, a progress
+  regex without a capture group, and messages the spec wouldn't accept are
+  rejected with exit 2 before the command runs. The built-ins are embedded TOML
+  read by the same loader, and a user preset with a built-in's name replaces
+  it. A preset is chosen by `--preset` or by command name, looking past
+  wrappers and their options (`sudo -u bob restic`, `nice -n 5 restic` and
+  `env -u FOO restic` all get `restic`).
+- **The `sudo` preset applies to every command,** because sudo can prompt from
+  deep inside a build script or Makefile. Its patterns are anchored to sudo's
+  exact prompts (`[sudo] password for …:` on Linux, `Password:` on macOS).
 - **Prompt detection.** Prompts don't end in a newline, so prompt patterns are
   matched against the unfinished line when output pauses, and must still match
-  150 ms later. More output on that line cancels the match. `blocked` ends when
-  the user presses Enter or the program finishes the line. Progress patterns are
-  tried at every line end (`\n`, `\r`, cursor movement) and on each pause, so
-  `\r`-redrawn progress bars work. Escape sequences are stripped before
+  150 ms later. More output on that line cancels the match. `blocked` ends
+  when the user presses Enter or the program finishes the line. Progress
+  patterns are tried at every line end (`\n`, `\r`, cursor movement) and on
+  each pause, so `\r`-redrawn progress bars work. Escape sequences, including
+  charset designations such as `ESC ( B` from `tput sgr0`, are stripped before
   matching.
-- **Our reports never split the command's escape sequences.** A report waits
-  until the output so far ends outside an escape sequence or UTF-8 character
-  (at most 250 ms, then it is written anyway). Progress-only updates are
-  limited to one per 200 ms.
-- **SIGINT/SIGQUIT are forwarded in `--pty` mode.** Plain `run` must not
-  forward them, because the terminal already sent them to the child. Under
-  `--pty` the command is in its own session, so a SIGINT sent to bellwether's
-  process group never reaches it otherwise. It is sent to the PTY's foreground
-  process group, as if typed. Typed Ctrl-C is a byte in raw mode and becomes a
-  SIGINT in the PTY. Both paths deliver exactly once, and tests cover each.
-- **A third `unsafe` call: `pre_exec` for `setsid` and `TIOCSCTTY`,** so the
-  command runs in its own session with the PTY as its controlling terminal.
-  Both are plain syscalls, safe between `fork` and `exec`.
-- **A fourth `unsafe` call: a do-nothing SIGWINCH handler.** macOS discards a
-  signal whose default action is "ignore" (SIGWINCH) when it arrives with the
-  default disposition, even while it is blocked and a thread waits in
-  `sigwait`. Linux keeps it pending. Found by the resize test, which timed out
-  on macOS. The handler never runs, because the signal stays blocked in every
-  thread.
-- **Piped stdin.** When stdin isn't a terminal, the PTY's ECHO is turned off
-  (nobody typed the input, so it shouldn't show up in the output), and end of
-  input is passed on as Ctrl-D.
+- **bellwether's reports never split the command's escape sequences.** A
+  report waits until the output so far ends outside an escape sequence or
+  UTF-8 character (at most 250 ms, then it is written anyway).
+  Progress-only updates are limited to one per 200 ms.
+- **SIGINT and SIGQUIT are forwarded under `--pty`.** The command is in its own
+  session there, so a signal sent to bellwether's process group would never
+  reach it. It goes to the PTY's foreground process group, as if typed. Typed
+  Ctrl-C is a byte in raw mode and becomes a SIGINT inside the PTY. Both paths
+  deliver exactly once.
+- **Piped stdin.** When stdin isn't a terminal, the PTY's echo is off (nobody
+  typed the input, so it shouldn't appear in the output), and end of input is
+  passed on as Ctrl-D, twice if the input ended mid-line, because one Ctrl-D
+  after a partial line only flushes that line.
 - **Stdout closing** (`| head`) is treated as a terminal hangup: the command
   gets SIGHUP.
-- **bellwether holds the secondary side open until the command exits.** macOS
-  discards output still queued in a PTY when the last secondary descriptor
-  closes. A command that writes and exits before bellwether reads (`echo hi`
-  on a slow CI runner) lost all its output: a standalone check lost 200 of 200
-  runs this way. bellwether keeps its own non-blocking descriptor for the
-  secondary side (opened separately, so the command's stdio stays blocking),
-  reads everything once the command has exited, then closes it. Found by the
-  first CI run on GitHub's macOS runner; it never showed locally.
 - **After the command exits,** output is copied until the PTY reports end of
   file, or has been quiet for 100 ms (1 s at most), in case a background
   process keeps it open. Keystrokes are no longer read, so they stay with the
   shell.
-- **SIGINT/SIGQUIT sent by pid in plain `run` are ignored.** They can't be told
-  apart from the Ctrl-C the terminal already sent to the whole process group
-  (macOS has no `sigwaitinfo` to see the sender). Use SIGTERM, or signal the
-  group. Documented in `run --help`.
-- **Not handled: job control under `--pty`.** The command leads its own session
-  and its parent (bellwether) is in another one, so its process group is
-  orphaned, and the kernel discards SIGTSTP/SIGTTIN/SIGTTOU sent to it. Ctrl-Z
-  therefore doesn't suspend the command (vim's Ctrl-Z does nothing), as with
-  `script(1)`. Supporting it would need bellwether to stop itself and resume
-  the command, as a shell does. Also not handled: stopping bellwether itself
-  (`kill -STOP` from outside). When it continues, the terminal is whatever the
-  shell left it in.
-- **Linux.** Run in VMPal containers (Debian, Rust 1.99) on aarch64 and on
-  x86_64 under Rosetta: clippy clean, 109 passed and 1 ignored on both, and the
-  PTY, SIGINT and nested tests passed 15 repeats in a row on aarch64. An
-  end-to-end run under `script(1)` reported progress, blocked and done through
-  `/dev/tty`. Handled Linux differences: EIO instead of EOF on the PTY master,
-  and CLOEXEC for `openpt` set through `fcntl`.
 
-## Phase 4 (release) decisions
+### `unsafe`
 
-- **CI** (`.github/workflows/ci.yml`) runs on Ubuntu and macOS: `fmt --check`,
-  clippy `-D warnings` with all features and with none, the full test suite,
-  the library's tests without features, and rustdoc `-D warnings`.
-- **Minimum Rust was wrong.** The workspace said 1.85, but the CLI uses
-  let-chains, stable from 1.88. The CLI now declares 1.88; the library stays
-  at 1.85. A CI job checks both. It only builds, because proptest (a
-  dev-dependency) needs 1.88.
-- **Releases** use cargo-dist 0.34 (`dist-workspace.toml`,
-  `.github/workflows/release.yml`, generated by `dist generate`, not edited by
-  hand). Pushing a `v*` tag builds aarch64 and x86_64 for macOS and Linux
-  (gnu) on native runners, makes a GitHub release with a shell installer, and
-  pushes the formula to `bscott/homebrew-tap`.
-- **Linux builds: gnu and musl.** The gnu build is made on Ubuntu 22.04 and
+All of it is in `crates/bellwether-cli/src/sys.rs`: four calls, each with a
+comment explaining why it is sound. The CLI crate denies `unsafe_code`, and
+only those four functions opt out, so a new `unsafe` elsewhere needs a visible
+`#[allow]`.
+
+1. `pre_exec` restoring the signal mask in the child (see `run` above).
+2. `pre_exec` running `setsid` and `TIOCSCTTY` under `--pty`, so the command
+   has the PTY as its controlling terminal.
+3. `signal(sig, SIG_DFL)` before re-raising the command's signal, because the
+   Rust runtime sets SIGPIPE to `SIG_IGN`.
+4. A do-nothing SIGWINCH handler, installed before the command starts (see
+   macOS below). It never runs, because the signal stays blocked.
+
+## Platform behaviour
+
+- **macOS discards SIGWINCH** when its disposition is the default ("ignore"),
+  even while it is blocked and a thread waits for it in `sigwait`. Linux keeps
+  it pending. Hence the do-nothing handler.
+- **macOS discards unread PTY output when the last descriptor for the
+  secondary side closes.** A command that writes and exits before bellwether
+  reads (`echo hi` on a slow machine) would lose all its output. bellwether
+  keeps its own non-blocking descriptor for the secondary side, opened
+  separately so the command's stdio stays blocking, reads everything once the
+  command has exited, then closes it.
+- **macOS sets `PENDIN`** in `c_lflag` when a terminal returns to canonical mode
+  with input pending; termios checks ignore that bit.
+- **Linux returns EIO, not EOF,** from the PTY master once nothing holds the
+  secondary side. macOS `openpt` doesn't accept CLOEXEC, so it is set with
+  `fcntl` on both.
+
+## Known limitations
+
+- **No job control under `--pty`.** The command leads its own session and its
+  parent (bellwether) is in another, so its process group is orphaned, and the
+  kernel discards SIGTSTP/SIGTTIN/SIGTTOU sent to it. Ctrl-Z doesn't suspend
+  the command (vim's Ctrl-Z does nothing), as with `script(1)`. Supporting it
+  would need bellwether to stop itself and resume the command, as a shell
+  does.
+- **Stopping bellwether itself** (`kill -STOP`) isn't handled. When it
+  continues, the terminal is in whatever state the shell left it.
+- **Terminal support varies.** Rex and the Herdr Mac app (via herdr-core) read
+  OSC 7501. The `herdr` TUI (0.9.5) doesn't, and leaves the pane `unknown`.
+
+## Testing
+
+- Unit and property tests cover the library's invariants: no panics on any
+  input, the scanner reproduces its input exactly, buffers stay bounded. Fuzz
+  targets in `fuzz/` cover parsing and scanning (`cargo +nightly fuzz run`).
+- The CLI tests drive bellwether through a PTY the test owns, playing the
+  terminal: typing, resizing, sending signals and checking that termios is
+  restored afterwards.
+- The SIGINT single-delivery test counts signals with `perl`, because `sh`
+  traps coalesce repeated signals (the shell's C handler only sets a flag).
+- CI runs fmt, clippy (all features and none), the tests and rustdoc on Ubuntu
+  and macOS, and builds the library on Rust 1.85 and the CLI on 1.88.
+
+## Releases
+
+- **cargo-dist** (`dist-workspace.toml`; `.github/workflows/release.yml` is
+  generated by `dist generate`, not edited by hand). A `v*` tag builds every
+  target on native runners, publishes a GitHub release with a shell
+  installer, and pushes the Homebrew formula `bellwether` to
+  `bscott/homebrew-tap`.
+- **Linux comes in two builds.** The gnu build is made on Ubuntu 22.04 and
   needs glibc 2.34 (it fails on Debian 11 with `GLIBC_2.33 not found`). The
-  musl builds are static and ran on Debian 11 and Alpine 3.24.
-- **musl version.** Every Rust channel (stable 1.99.1 to nightly 1.101) bundles
-  musl 1.2.5, not the newer 1.2.6. From Rust 1.95.0 on, Rust patches it for
-  CVE-2025-26519 (iconv), CVE-2026-6042 and CVE-2026-40200. The last two are
-  not fixed in any musl release yet, so this is newer than plain 1.2.6.
-  `.github/build-setup.yml` stops a release build on Rust older than 1.95.
-  The runners install Ubuntu's `musl-tools` (musl 1.2.2), but only for
-  `musl-gcc`: the link uses Rust's self-contained `crt1.o` and `libc.a`, and
-  bellwether has no C code. The sshhole bug (musl `crypt()` returning `"*"`
-  for long passwords, fixed in OpenSSH 10.6p2) is in sshd; bellwether never
-  calls `crypt()`.
-- **Formula name** is `bellwether` (the binary), not `bellwether-cli` (the
-  package). Archives keep the package name.
-- **Not published to crates.io.** The brief didn't ask for it.
-- **Needed before the first release:** the `bscott/homebrew-tap` repo, and a
-  `HOMEBREW_TAP_TOKEN` secret on `bscott/bellwether` that can push to it.
+  musl build is static and runs on any Linux, including Debian 11 and Alpine.
+- **musl version.** Every Rust channel bundles musl 1.2.5 rather than the
+  newer 1.2.6, but from Rust 1.95.0 on it is patched for CVE-2025-26519
+  (iconv), CVE-2026-6042 and CVE-2026-40200. The last two aren't fixed in any
+  musl release yet, so this copy is ahead of plain 1.2.6.
+  `.github/build-setup.yml` stops a release build on Rust older than 1.95. The
+  runners install Ubuntu's `musl-tools` (musl 1.2.2) only for `musl-gcc`: the
+  link uses Rust's self-contained `crt1.o` and `libc.a`, and bellwether has no
+  C code. The "sshhole" bug (musl `crypt()` returning `"*"` for long
+  passwords, fixed in OpenSSH 10.6p2) is in sshd; bellwether never calls
+  `crypt()`.
+- **Minimum Rust:** 1.85 for the library, 1.88 for the CLI (let-chains).
