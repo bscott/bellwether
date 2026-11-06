@@ -204,6 +204,19 @@ spec says that the brief left out:
   hand). Pushing a `v*` tag builds aarch64 and x86_64 for macOS and Linux
   (gnu) on native runners, makes a GitHub release with a shell installer, and
   pushes the formula to `bscott/homebrew-tap`.
+- **Linux builds: gnu and musl.** The gnu build is made on Ubuntu 22.04 and
+  needs glibc 2.34 (it fails on Debian 11 with `GLIBC_2.33 not found`). The
+  musl builds are static and ran on Debian 11 and Alpine 3.24.
+- **musl version.** Every Rust channel (stable 1.99.1 to nightly 1.101) bundles
+  musl 1.2.5, not the newer 1.2.6. From Rust 1.95.0 on, Rust patches it for
+  CVE-2025-26519 (iconv), CVE-2026-6042 and CVE-2026-40200. The last two are
+  not fixed in any musl release yet, so this is newer than plain 1.2.6.
+  `.github/build-setup.yml` stops a release build on Rust older than 1.95.
+  The runners install Ubuntu's `musl-tools` (musl 1.2.2), but only for
+  `musl-gcc`: the link uses Rust's self-contained `crt1.o` and `libc.a`, and
+  bellwether has no C code. The sshhole bug (musl `crypt()` returning `"*"`
+  for long passwords, fixed in OpenSSH 10.6p2) is in sshd; bellwether never
+  calls `crypt()`.
 - **Formula name** is `bellwether` (the binary), not `bellwether-cli` (the
   package). Archives keep the package name.
 - **Not published to crates.io.** The brief didn't ask for it.

@@ -7,8 +7,9 @@ done, or failed, and why.
 Spec (rev 0.4): <https://www.superlogical.com/rex/docs/build/program-status>
 
 Runs on macOS and Linux. The library needs Rust 1.85 or later, the CLI 1.88.
-The prebuilt Linux binaries need glibc 2.34 or later (Ubuntu 22.04, Debian 12,
-RHEL 9 and newer). On older systems, build from source.
+Linux releases come in two builds. The `gnu` build needs glibc 2.34 or later
+(Ubuntu 22.04, Debian 12, RHEL 9 and newer). The `musl` build is a static
+binary that runs on any Linux, including older glibc systems and Alpine.
 
 ## CLI
 

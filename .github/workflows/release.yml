@@ -127,6 +127,16 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
+      - name: "Require Rust 1.95 or later (patched bundled musl)"
+        run: |
+          v=$(rustc --version | awk '{print $2}')
+          echo "rustc $v"
+          min=1.95.0
+          if [ "$(printf '%s\n%s\n' "$min" "${v%%-*}" | sort -V | head -1)" != "$min" ]; then
+            echo "::error::rustc $v is older than $min; its bundled musl lacks CVE patches"
+            exit 1
+          fi
+        shell: "bash"
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest

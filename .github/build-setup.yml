@@ -1,0 +1,14 @@
+# Injected into each cargo-dist build job (see github-build-setup in
+# dist-workspace.toml). The musl targets link Rust's bundled musl 1.2.5, which
+# Rust patches for CVE-2025-26519, CVE-2026-6042 and CVE-2026-40200 from Rust
+# 1.95.0 on. Refuse to build a release with an older compiler.
+- name: Require Rust 1.95 or later (patched bundled musl)
+  shell: bash
+  run: |
+    v=$(rustc --version | awk '{print $2}')
+    echo "rustc $v"
+    min=1.95.0
+    if [ "$(printf '%s\n%s\n' "$min" "${v%%-*}" | sort -V | head -1)" != "$min" ]; then
+      echo "::error::rustc $v is older than $min; its bundled musl lacks CVE patches"
+      exit 1
+    fi
