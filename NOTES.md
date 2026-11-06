@@ -159,6 +159,14 @@ spec says that the brief left out:
   input is passed on as Ctrl-D.
 - **Stdout closing** (`| head`) is treated as a terminal hangup: the command
   gets SIGHUP.
+- **bellwether holds the secondary side open until the command exits.** macOS
+  discards output still queued in a PTY when the last secondary descriptor
+  closes. A command that writes and exits before bellwether reads (`echo hi`
+  on a slow CI runner) lost all its output: a standalone check lost 200 of 200
+  runs this way. bellwether keeps its own non-blocking descriptor for the
+  secondary side (opened separately, so the command's stdio stays blocking),
+  reads everything once the command has exited, then closes it. Found by the
+  first CI run on GitHub's macOS runner; it never showed locally.
 - **After the command exits,** output is copied until the PTY reports end of
   file, or has been quiet for 100 ms (1 s at most), in case a background
   process keeps it open. Keystrokes are no longer read, so they stay with the

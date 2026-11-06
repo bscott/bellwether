@@ -83,7 +83,8 @@ pub fn run(
         });
 
     // Piped input isn't typed by a person: don't echo it into the output.
-    let (master, secondary) = open_pty(modes.as_ref(), size, stdin_tty).map_err(Failure::Setup)?;
+    let (master, secondary, hold) =
+        open_pty(modes.as_ref(), size, stdin_tty).map_err(Failure::Setup)?;
     let stdio = || {
         secondary
             .try_clone()
@@ -93,7 +94,7 @@ pub fn run(
     cmd.stdin(stdio()?).stdout(stdio()?).stderr(stdio()?);
     sys::session_leader(&mut cmd);
     let mut child = cmd.spawn().map_err(Failure::Spawn)?;
-    // Only the command may hold the secondary side, so its exit ends the output.
+    // Besides the command, only our `hold` keeps the secondary side open.
     drop(cmd);
     drop(secondary);
     let pid = Pid::from_raw(child.id() as i32);
@@ -149,6 +150,7 @@ pub fn run(
 
     let mut session = Session {
         master,
+        hold: Some(hold),
         reporter,
         fallback,
         moved: false,
@@ -176,6 +178,12 @@ pub struct Shown {
 
 struct Session<'a> {
     master: Arc<OwnedFd>,
+    /// Our own descriptor for the secondary side, kept until the command has
+    /// exited and its output has been read. macOS discards output still
+    /// queued in a PTY when the last secondary descriptor closes, so a command
+    /// that writes and exits before we read would otherwise lose its output.
+    /// It is non-blocking, so closing it never waits for the queue to drain.
+    hold: Option<OwnedFd>,
     reporter: &'a mut Reporter,
     fallback: Option<Id>,
     /// Moved off the original record already.
@@ -265,6 +273,23 @@ impl Session<'_> {
                     exited = Some(status);
                     drain_idle = Some(now + DRAIN_IDLE);
                     drain_max = Some(now + DRAIN_MAX);
+                    // Everything the command wrote is queued by now. Read it
+                    // all, then let go of the secondary side, so EOF (or EIO)
+                    // comes once no background process holds it either.
+                    if master_open {
+                        loop {
+                            match rustix::io::read(&*self.master, &mut buf) {
+                                Ok(0) | Err(Errno::IO) => {
+                                    master_open = false;
+                                    break;
+                                }
+                                Ok(n) => self.output(&buf[..n], now),
+                                Err(Errno::INTR) => {}
+                                Err(_) => break,
+                            }
+                        }
+                    }
+                    self.hold = None;
                 }
             }
 
@@ -434,10 +459,16 @@ impl Session<'_> {
     }
 }
 
-/// Opens a PTY pair with the given modes and size, and echo on or off. Both
-/// ends are close-on-exec; the command gets the secondary side through its
-/// stdio.
-fn open_pty(modes: Option<&Termios>, size: Winsize, echo: bool) -> io::Result<(OwnedFd, OwnedFd)> {
+/// Opens a PTY pair with the given modes and size, and echo on or off. All
+/// descriptors are close-on-exec; the command gets the secondary side through
+/// its stdio. The third is our own non-blocking hold on the secondary side
+/// (see [`Session::hold`]); it is a separate open, so `O_NONBLOCK` doesn't
+/// reach the command's stdio.
+fn open_pty(
+    modes: Option<&Termios>,
+    size: Winsize,
+    echo: bool,
+) -> io::Result<(OwnedFd, OwnedFd, OwnedFd)> {
     let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY)?;
     fcntl_setfd(&master, FdFlags::CLOEXEC)?;
     grantpt(&master)?;
@@ -457,7 +488,12 @@ fn open_pty(modes: Option<&Termios>, size: Winsize, echo: bool) -> io::Result<(O
     }
     tcsetattr(&secondary, OptionalActions::Now, &m)?;
     tcsetwinsize(&secondary, size)?;
-    Ok((master, secondary))
+    let hold = open(
+        name.as_c_str(),
+        OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::empty(),
+    )?;
+    Ok((master, secondary, hold))
 }
 
 /// Our terminal (stdin) in raw mode until dropped.
