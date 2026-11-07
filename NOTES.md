@@ -153,6 +153,17 @@ all, rather than overwrite its parent's record. `emit` ignores the variable.
   process keeps it open. Keystrokes are no longer read, so they stay with the
   shell.
 
+### `status`
+
+- **Records keep their last report.** `status` doesn't apply the spec's
+  lifetime rule at end of input (a terminal drops `working`, `blocked` and
+  `idle` records when the program exits). It shows a stream, not a process,
+  and a table that ends empty would hide what was reported.
+- **Live mode** (stdout is a terminal) redraws in place: cursor up over the
+  previous table, erase to the end of the screen. Each line is cut to the
+  terminal's width and the table to its height (with a `… N more` line), so a
+  redraw never wraps or scrolls and the cursor-up count stays right.
+
 ### `unsafe`
 
 All of it is in `crates/bellwether-cli/src/sys.rs`: four calls, each with a

@@ -300,6 +300,37 @@ fn run_custom_flags() {
 }
 
 #[test]
+fn status_tables_a_run() {
+    let run = output(&[
+        "run",
+        "--stdout",
+        "--app",
+        "demo",
+        "--id",
+        "job",
+        "--title",
+        "Nap",
+        "--done-msg",
+        "Rested",
+        "--",
+        "true",
+    ]);
+    assert!(run.status.success());
+    let mut child = cmd(&["status"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(&run.stdout).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        "RECORD  STATE  PROGRESS  APP   STATUS\njob     done             demo  Nap: Rested\n"
+    );
+}
+
+#[test]
 fn run_title_goes_with_every_report() {
     let (status, lines) = run_sh(
         "true",

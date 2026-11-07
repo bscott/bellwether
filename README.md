@@ -60,7 +60,13 @@ bellwether run --pty -- restic backup ~/Documents
 ```sh
 bellwether probe                 # exit 0 supported, 1 not, 3 no terminal
 some-program | bellwether decode # one JSON line per report
+some-program | bellwether status # a table of the records, redrawn live
 ```
+
+`status` keeps each record's latest report, following the spec's rules for
+replacing, clearing and `app` inheritance, which is handy in terminals that
+don't show OSC 7501 themselves:
+`bellwether run --stdout -- make test | bellwether status`.
 
 ### Details
 

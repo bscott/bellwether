@@ -7,6 +7,7 @@ mod preset;
 mod probe;
 mod pty;
 mod run;
+mod status;
 mod sys;
 mod watch;
 
@@ -97,6 +98,18 @@ key for each sequence that was discarded. Other input is ignored.
 Example:
   printf '\\e]7501;state=working:msg=SGk=\\e\\\\' | bellwether decode")]
     Decode,
+
+    /// Show the records that the OSC 7501 reports on stdin add up to
+    #[command(after_help = "\
+Reads reports from stdin and keeps each record's latest status, following the
+spec's rules for replacing, clearing and app inheritance. On a terminal the
+table is redrawn as reports arrive. Otherwise it is printed once, at the end of
+input. Records keep their last report: nothing is dropped when input ends.
+
+Examples:
+  bellwether run --stdout -- make test | bellwether status
+  ./deploy-all.sh | bellwether status")]
+    Status,
 }
 
 #[derive(Args)]
@@ -228,6 +241,7 @@ fn main() -> ExitCode {
         Command::Run(args) => run::run(args),
         Command::Probe(args) => probe::probe(args),
         Command::Decode => decode::decode(),
+        Command::Status => status::status(),
     }
 }
 
