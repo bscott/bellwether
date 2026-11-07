@@ -115,9 +115,16 @@ all, rather than overwrite its parent's record. `emit` ignores the variable.
   it. A preset is chosen by `--preset` or by command name, looking past
   wrappers and their options (`sudo -u bob restic`, `nice -n 5 restic` and
   `env -u FOO restic` all get `restic`).
-- **The `sudo` preset applies to every command,** because sudo can prompt from
-  deep inside a build script or Makefile. Its patterns are anchored to sudo's
-  exact prompts (`[sudo] password for …:` on Linux, `Password:` on macOS).
+- **The `sudo` and `ssh` presets apply to every command,** because both can
+  prompt from deep inside a build script, a Makefile, `git push` or
+  `rsync host:`. Their patterns are anchored to the exact prompts (`[sudo]
+  password for …:` on Linux, `Password:` on macOS; ssh's key passphrase, PIN,
+  `user@host's password:`, `(user@host) Password:` and the unknown host key
+  question), so ordinary output that mentions a password doesn't match.
+- **Progress as a count.** A progress regex with named groups `done` and
+  `total` reports `done × 100 / total`, rounded down (cargo's `45/120`). Without
+  them, the first capture group is a percentage. A regex with only one of the
+  two names is rejected, and a count past its total is ignored.
 - **Prompt detection.** Prompts don't end in a newline, so prompt patterns are
   matched against the unfinished line when output pauses, and must still match
   150 ms later. More output on that line cancels the match. `blocked` ends

@@ -886,7 +886,10 @@ fn pty_bad_presets_file_exits_2_without_running() {
 
     let out = output(&["run", "--pty", "--preset", "nope", "--", "true"]);
     assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("available: restic, sudo"));
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("available: restic, git, apt, dnf, rsync, cargo, sudo, ssh")
+    );
     // --preset only makes sense with --pty.
     assert_eq!(
         output(&["run", "--preset", "restic", "--", "true"])

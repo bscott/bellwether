@@ -65,9 +65,10 @@ With --pty the command runs in a pseudoterminal and bellwether watches its
 output. A preset's progress pattern sets the percentage, and its prompt
 patterns report `blocked` (kind auth or question) until you press Enter. Presets
 come from ~/.config/bellwether/presets.toml (or $XDG_CONFIG_HOME) and the
-built-ins `restic` and `sudo` (always on). The preset is picked by command name, or with
---preset. If the command sends its own OSC 7501 report for the record bellwether
-is using, bellwether moves to the child record `bellwether` beneath it.
+built-ins restic, git, apt, dnf, rsync and cargo, plus sudo and ssh, which are
+always on. The preset is picked by command name, or with --preset. If the
+command sends its own OSC 7501 report for the record bellwether is using,
+bellwether moves to the child record `bellwether` beneath it.
 
 Nested runs: bellwether sets BELLWETHER_PARENT_ID for the command, and a
 `bellwether run` that finds it reports on a child record (parent/app).

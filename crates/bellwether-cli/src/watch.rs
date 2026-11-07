@@ -277,14 +277,8 @@ impl Watcher {
 
     fn check_progress(&mut self) {
         for re in &self.rules.progress {
-            if let Some(pct) = re
-                .captures(&self.line)
-                .and_then(|c| c.get(1))
-                .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())
-                .and_then(|s| s.parse::<f64>().ok())
-                .filter(|v| (0.0..=100.0).contains(v))
-            {
-                self.progress = Some(pct.floor() as u8);
+            if let Some(pct) = re.captures(&self.line).and_then(|c| percent(&c)) {
+                self.progress = Some(pct);
                 return;
             }
         }
@@ -315,6 +309,25 @@ impl Watcher {
             }
         });
     }
+}
+
+/// The percentage a progress match stands for: `done`/`total` when the regex
+/// has those groups, else the first capture group. Out of range is `None`.
+fn percent(c: &regex::bytes::Captures<'_>) -> Option<u8> {
+    let num = |m: Option<regex::bytes::Match<'_>>| -> Option<f64> {
+        std::str::from_utf8(m?.as_bytes()).ok()?.parse().ok()
+    };
+    let pct = match (c.name("done"), c.name("total")) {
+        (Some(d), Some(t)) => {
+            let (d, t) = (num(Some(d))?, num(Some(t))?);
+            if t <= 0.0 || d > t {
+                return None;
+            }
+            d * 100.0 / t
+        }
+        _ => num(c.get(1))?,
+    };
+    (0.0..=100.0).contains(&pct).then(|| pct.floor() as u8)
 }
 
 /// The prompt line as a report message: trimmed, at most
@@ -467,6 +480,139 @@ mod tests {
         w.output("Passwö\x08ord\x1b]0;x\x07:".as_bytes(), t);
         settle(&mut w, t);
         assert!(matches!(w.status(), Status::Blocked { .. }));
+    }
+
+    /// A watcher with the presets chosen for `command`, as `run --pty` would.
+    fn watcher_for(command: &[&str]) -> Watcher {
+        let all = parse(BUILTIN, "built-in").unwrap();
+        let argv: Vec<String> = command.iter().map(|s| s.to_string()).collect();
+        Watcher::new(Rules::from_presets(
+            &crate::preset::select(&all, None, &argv).unwrap(),
+        ))
+    }
+
+    /// Feeds `out` and returns the progress seen and the status once settled.
+    fn read(command: &[&str], out: &[u8]) -> (Option<u8>, Status) {
+        let mut w = watcher_for(command);
+        let t = Instant::now();
+        w.output(out, t);
+        settle(&mut w, t);
+        (w.progress(), w.status())
+    }
+
+    fn blocked(kind: Kind, msg: &str) -> Status {
+        Status::Blocked {
+            kind,
+            msg: msg.into(),
+        }
+    }
+
+    #[test]
+    fn git_preset() {
+        let git = ["git", "clone", "https://example.com/r.git"];
+        let out = b"remote: Counting objects: 100% (5/5), done.\n\
+            Receiving objects:  45% (450/1000), 1.20 MiB | 2.00 MiB/s\r";
+        assert_eq!(read(&git, out).0, Some(45));
+        assert_eq!(
+            read(&git, b"Username for 'https://example.com': ").1,
+            blocked(Kind::Auth, "Username for 'https://example.com':")
+        );
+        // Through ssh: the always-on ssh preset.
+        assert_eq!(
+            read(
+                &git,
+                b"Enter passphrase for key '/home/a/.ssh/id_ed25519': "
+            )
+            .1,
+            blocked(
+                Kind::Auth,
+                "Enter passphrase for key '/home/a/.ssh/id_ed25519':"
+            )
+        );
+    }
+
+    #[test]
+    fn apt_preset() {
+        let apt = ["sudo", "apt-get", "upgrade"];
+        assert_eq!(
+            read(&apt, b"45% [3 libfoo 1,024 kB/2,048 kB 50%]\r").0,
+            Some(45)
+        );
+        // dpkg's status bar on the bottom row, drawn with saved cursor.
+        let bar = b"Unpacking foo ...\n\x1b7\x1b[24;0f\x1b[42m\x1b[30mProgress: [ 67%]\x1b[49m\x1b[39m [####......] \x1b8";
+        assert_eq!(read(&apt, bar).0, Some(67));
+        assert_eq!(
+            read(&apt, b"Do you want to continue? [Y/n] ").1,
+            blocked(Kind::Question, "Do you want to continue? [Y/n]")
+        );
+        assert!(matches!(
+            read(&apt, b"*** sshd_config (Y/I/N/O/D/Z) [default=N] ? ").1,
+            Status::Blocked {
+                kind: Kind::Question,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn dnf_preset() {
+        assert_eq!(
+            read(&["dnf", "upgrade"], b"Is this ok [y/N]: ").1,
+            blocked(Kind::Question, "Is this ok [y/N]:")
+        );
+    }
+
+    #[test]
+    fn rsync_preset() {
+        let out = b"      1,234,567  45%   12.34MB/s    0:00:12 (xfr#3, to-chk=10/20)\r";
+        assert_eq!(read(&["rsync", "-a", "src/", "dst/"], out).0, Some(45));
+        let out = b"    123.45M  72%   10.00MB/s    0:00:03\r";
+        assert_eq!(read(&["rsync", "-a", "src/", "dst/"], out).0, Some(72));
+    }
+
+    #[test]
+    fn cargo_preset_counts_steps() {
+        let cargo = ["cargo", "build"];
+        let out =
+            b"\x1b[1m\x1b[36m    Building\x1b[0m [=====>                    ] 45/120: serde, syn\r";
+        assert_eq!(read(&cargo, out).0, Some(37));
+        // A count past its total is ignored.
+        assert_eq!(
+            read(&cargo, b"    Building [=====>   ] 130/120: x\r").0,
+            None
+        );
+    }
+
+    #[test]
+    fn ssh_preset_applies_to_every_command() {
+        let any = ["./deploy.sh"];
+        for (out, kind) in [
+            (&b"alice@example.com's password: "[..], Kind::Auth),
+            (b"(alice@example.com) Password: ", Kind::Auth),
+            (
+                b"Enter PIN for ECDSA-SK key /home/a/.ssh/id_ecdsa_sk: ",
+                Kind::Auth,
+            ),
+            (
+                b"Are you sure you want to continue connecting (yes/no/[fingerprint])? ",
+                Kind::Question,
+            ),
+            (
+                b"Are you sure you want to continue connecting (yes/no)? ",
+                Kind::Question,
+            ),
+        ] {
+            assert!(
+                matches!(read(&any, out).1, Status::Blocked { kind: k, .. } if k == kind),
+                "{}",
+                String::from_utf8_lossy(out)
+            );
+        }
+        // Ordinary output that mentions a password is not a prompt.
+        assert_eq!(
+            read(&any, b"Updated alice's password: ok").1,
+            Status::Working
+        );
     }
 
     #[test]

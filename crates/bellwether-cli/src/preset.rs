@@ -11,7 +11,8 @@
 //! [restic]
 //! commands = ["restic"]            # which commands it applies to (default: [name])
 //! always = false                   # apply to every command (default: false)
-//! progress = '([0-9]+(?:\.[0-9]+)?)%'
+//! progress = '([0-9]+(?:\.[0-9]+)?)%'   # first capture group = percent
+//! # or count steps: progress = '(?P<done>[0-9]+)/(?P<total>[0-9]+)'
 //! blocked = [
 //!   { pattern = '(?i)enter password[^:]*:\s*$', kind = "auth" },
 //!   { pattern = '\[y/N\]\s*$', kind = "question", msg = "Confirm?" },
@@ -33,6 +34,39 @@ blocked = [
   { pattern = '(?i)enter password[^:]*:\s*$', kind = "auth" },
 ]
 
+# git clone / fetch / pull / push. Each phase counts to 100% on its own line.
+# Credential prompts: "Username for 'https://github.com': ".
+[git]
+progress = '^(?:Receiving objects|Writing objects|Resolving deltas|Updating files):\s+([0-9]{1,3})%'
+blocked = [
+  { pattern = "^(?:Username|Password) for '[^']*':\\s*$", kind = "auth" },
+]
+
+# apt download lines ("45% [3 libfoo 1,024 kB/2,048 kB 50%]") and dpkg's
+# status bar ("Progress: [ 45%] [####....]").
+[apt]
+commands = ["apt", "apt-get", "aptitude"]
+progress = '^(?:Progress: \[\s*)?([0-9]{1,3})%(?:\]| \[)'
+blocked = [
+  { pattern = '\[[Yy]/[Nn]\]\s*$', kind = "question" },
+  # dpkg asking about a changed config file: "... (Y/I/N/O/D/Z) [default=N] ?"
+  { pattern = '\[default=[A-Z]\] \?\s*$', kind = "question" },
+]
+
+[dnf]
+commands = ["dnf", "dnf5", "yum"]
+blocked = [
+  { pattern = '\[[Yy]/[Nn]\]:?\s*$', kind = "question" },
+]
+
+# rsync --progress or --info=progress2: "  1,234,567  45%   12.34MB/s    0:00:12"
+[rsync]
+progress = '^\s*[0-9][0-9,.]*[KMGT]?\s+([0-9]{1,3})%\s+\S+/s'
+
+# cargo's progress bar: "    Building [=====>      ] 45/120: serde, syn"
+[cargo]
+progress = '^\s*Building \[[=> ]*\] (?P<done>[0-9]+)/(?P<total>[0-9]+)'
+
 # sudo can prompt from inside any command, so this one always applies.
 # Linux: "[sudo] password for alice: ". macOS: "Password:".
 [sudo]
@@ -40,6 +74,18 @@ always = true
 blocked = [
   { pattern = '^\[sudo\] password for [^:]*:\s*$', kind = "auth" },
   { pattern = '^Password:\s*$', kind = "auth" },
+]
+
+# ssh prompts come from git, rsync, scp, ansible and more, so this one always
+# applies too. The patterns are ssh's exact prompts.
+[ssh]
+always = true
+blocked = [
+  { pattern = "^Enter passphrase for key '[^']*':\\s*$", kind = "auth" },
+  { pattern = '^Enter PIN for .*:\s*$', kind = "auth" },
+  { pattern = "^[^\\s@]+@[^\\s']+'s password:\\s*$", kind = "auth" },
+  { pattern = '^\([^)]*\) Password:\s*$', kind = "auth" },
+  { pattern = 'continue connecting \(yes/no(?:/\[fingerprint\])?\)\?\s*$', kind = "question" },
 ]
 "#;
 
@@ -51,7 +97,8 @@ pub struct Preset {
     pub commands: Vec<String>,
     /// Applies to every command.
     pub always: bool,
-    /// First capture group is a percentage.
+    /// First capture group is a percentage, unless the regex has `done` and
+    /// `total` groups, which count steps.
     pub progress: Option<Regex>,
     pub blocked: Vec<Blocked>,
 }
@@ -241,6 +288,13 @@ fn preset(name: &str, t: toml::Table, at: &str) -> Result<Preset, String> {
             }
             "progress" => {
                 let re = regex(&value, &format!("{at}.progress"))?;
+                let named = |n| re.capture_names().flatten().any(|c| c == n);
+                if named("done") != named("total") {
+                    return Err(format!(
+                        "{at}.progress: needs both `done` and `total` groups, like \
+                         '(?P<done>[0-9]+)/(?P<total>[0-9]+)'"
+                    ));
+                }
                 if re.captures_len() < 2 {
                     return Err(format!(
                         "{at}.progress: needs a capture group for the percentage, like '([0-9]+)%'"
@@ -344,35 +398,50 @@ mod tests {
     #[test]
     fn builtins_parse() {
         let all = parse(BUILTIN, "built-in").unwrap();
-        assert_eq!(names(&all), ["restic", "sudo"]);
-        assert!(all[1].always);
+        assert_eq!(
+            names(&all),
+            [
+                "restic", "git", "apt", "dnf", "rsync", "cargo", "sudo", "ssh"
+            ]
+        );
+        let always: Vec<&str> = all
+            .iter()
+            .filter(|p| p.always)
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(always, ["sudo", "ssh"]);
     }
 
     #[test]
     fn selection() {
         let all = parse(BUILTIN, "built-in").unwrap();
         let sel = |v: &[&str]| names(&select(&all, None, &argv(v)).unwrap()).join(",");
-        assert_eq!(sel(&["restic", "backup"]), "restic,sudo");
-        assert_eq!(sel(&["/usr/local/bin/restic"]), "restic,sudo");
-        assert_eq!(sel(&["sudo", "-E", "restic", "backup"]), "restic,sudo");
-        assert_eq!(sel(&["env", "A=1", "restic"]), "restic,sudo");
+        assert_eq!(sel(&["restic", "backup"]), "restic,sudo,ssh");
+        assert_eq!(sel(&["/usr/local/bin/restic"]), "restic,sudo,ssh");
+        assert_eq!(sel(&["sudo", "-E", "restic", "backup"]), "restic,sudo,ssh");
+        assert_eq!(sel(&["env", "A=1", "restic"]), "restic,sudo,ssh");
         // Wrapper options with a separate argument.
-        assert_eq!(sel(&["sudo", "-u", "bob", "restic"]), "restic,sudo");
-        assert_eq!(sel(&["sudo", "-ubob", "restic"]), "restic,sudo");
-        assert_eq!(sel(&["sudo", "--user=bob", "restic"]), "restic,sudo");
-        assert_eq!(sel(&["nice", "-n", "5", "restic"]), "restic,sudo");
-        assert_eq!(sel(&["env", "-u", "FOO", "A=1", "restic"]), "restic,sudo");
-        assert_eq!(sel(&["time", "-p", "restic"]), "restic,sudo");
+        assert_eq!(sel(&["sudo", "-u", "bob", "restic"]), "restic,sudo,ssh");
+        assert_eq!(sel(&["sudo", "-ubob", "restic"]), "restic,sudo,ssh");
+        assert_eq!(sel(&["sudo", "--user=bob", "restic"]), "restic,sudo,ssh");
+        assert_eq!(sel(&["nice", "-n", "5", "restic"]), "restic,sudo,ssh");
+        assert_eq!(
+            sel(&["env", "-u", "FOO", "A=1", "restic"]),
+            "restic,sudo,ssh"
+        );
+        assert_eq!(sel(&["time", "-p", "restic"]), "restic,sudo,ssh");
         assert_eq!(
             sel(&["sudo", "nice", "-n", "5", "/usr/bin/restic"]),
-            "restic,sudo"
+            "restic,sudo,ssh"
         );
         // The program's own arguments are never tried.
-        assert_eq!(sel(&["make", "-C", "restic"]), "sudo");
-        assert_eq!(sel(&["make", "restic"]), "sudo");
-        assert_eq!(sel(&["ls"]), "sudo");
+        assert_eq!(sel(&["make", "-C", "restic"]), "sudo,ssh");
+        assert_eq!(sel(&["make", "restic"]), "sudo,ssh");
+        assert_eq!(sel(&["ls"]), "sudo,ssh");
+        assert_eq!(sel(&["apt-get", "install", "x"]), "apt,sudo,ssh");
+        assert_eq!(sel(&["sudo", "dnf", "upgrade"]), "dnf,sudo,ssh");
         let explicit = select(&all, Some("restic"), &argv(&["sh", "-c", "x"])).unwrap();
-        assert_eq!(names(&explicit), ["restic", "sudo"]);
+        assert_eq!(names(&explicit), ["restic", "sudo", "ssh"]);
         assert!(select(&all, Some("nope"), &argv(&["x"])).is_err());
     }
 
@@ -385,10 +454,15 @@ mod tests {
         )
         .unwrap();
         merge(&mut all, user);
-        assert_eq!(names(&all), ["sudo", "mytool", "restic"]);
+        assert_eq!(
+            names(&all),
+            [
+                "sudo", "mytool", "restic", "git", "apt", "dnf", "rsync", "cargo", "ssh"
+            ]
+        );
         assert!(!all[0].always);
         let sel = select(&all, None, &argv(&["mt"])).unwrap();
-        assert_eq!(names(&sel), ["mytool"]);
+        assert_eq!(names(&sel), ["mytool", "ssh"]);
     }
 
     #[test]
@@ -396,6 +470,8 @@ mod tests {
         let err = |t: &str| parse(t, "f").unwrap_err();
         assert!(err("[a]\nprogress = '('").contains("f: [a].progress: invalid regex"));
         assert!(err("[a]\nprogress = 'x%'").contains("capture group"));
+        assert!(err("[a]\nprogress = '(?P<done>[0-9]+)/([0-9]+)'").contains("`total`"));
+        assert!(parse("[a]\nprogress = '(?P<done>[0-9]+)/(?P<total>[0-9]+)'", "f").is_ok());
         assert!(err("[a]\nbogus = 1").contains("unknown key \"bogus\""));
         assert!(
             err("[a]\nblocked = [{ pattern = 'x', kind = 'nope' }]")
