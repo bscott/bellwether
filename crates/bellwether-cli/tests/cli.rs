@@ -300,6 +300,29 @@ fn run_custom_flags() {
 }
 
 #[test]
+fn run_title_goes_with_every_report() {
+    let (status, lines) = run_sh(
+        "true",
+        &["--app", "demo", "--title", "Nightly", "--msg", "Napping"],
+    );
+    assert!(status.success());
+    assert_eq!(
+        lines[0],
+        r#"{"state":"working","app":"demo","title":"Nightly","msg":"Napping"}"#
+    );
+    assert!(
+        lines[1].starts_with(r#"{"state":"done","app":"demo","title":"Nightly","msg":"#),
+        "{}",
+        lines[1]
+    );
+    // Too long: rejected before the command runs.
+    let long = "t".repeat(193);
+    let out = output(&["run", "--stdout", "--title", &long, "--", "true"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+}
+
+#[test]
 fn run_rejects_invalid_messages_before_running() {
     let dir = scratch();
     let marker = dir.join("ran");

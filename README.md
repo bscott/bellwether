@@ -36,6 +36,7 @@ cargo install bellwether-cli
 ```sh
 bellwether run -- make test
 bellwether run --app restic --msg "Nightly backup" -- restic backup ~/Documents
+bellwether run --title "Nightly backup" -- ./backup.sh   # label the record
 ```
 
 **Report from a script.** Each `emit` writes one report:

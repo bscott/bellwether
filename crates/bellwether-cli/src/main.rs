@@ -75,6 +75,7 @@ Nested runs: bellwether sets BELLWETHER_PARENT_ID for the command, and a
 
 Examples:
   bellwether run --app restic -- restic backup ~/Documents
+  bellwether run --title 'Nightly backup' -- ./backup.sh
   bellwether run --pty -- restic backup ~/Documents
   bellwether run --pty --preset restic -- ./backup.sh")]
     Run(RunArgs),
@@ -167,6 +168,10 @@ struct RunArgs {
     /// Message when the command fails [default: e.g. "Exited 1 after 12s"]
     #[arg(long)]
     error_msg: Option<String>,
+
+    /// Short label for the record, sent with every report (≤ 192 bytes)
+    #[arg(long)]
+    title: Option<String>,
 
     /// Record id to report on. Omit for the root record. When nested inside
     /// another `bellwether run`, it is relative to that run's record
