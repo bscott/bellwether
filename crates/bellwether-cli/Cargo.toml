@@ -17,7 +17,7 @@ name = "bellwether"
 path = "src/main.rs"
 
 [dependencies]
-bellwether = { path = "../bellwether", version = "0.1.1", features = ["tty"] }
+bellwether = { path = "../bellwether", version = "0.1.2", features = ["tty"] }
 clap = { version = "4.6", features = ["derive", "wrap_help"] }
 nix = { version = "0.31", features = ["signal", "process"] }
 regex = "1.13"
