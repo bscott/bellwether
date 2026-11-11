@@ -32,6 +32,7 @@ const FALLBACK_SEGMENT: &str = "bellwether";
 pub struct Reporter {
     sink: Sink,
     app: Option<App>,
+    title: Option<String>,
     /// The record reported on. `run --pty` changes it when moving.
     pub id: Option<Id>,
 }
@@ -41,6 +42,9 @@ impl Reporter {
         let mut b = Report::builder(state).maybe_id(self.id.clone());
         if let Some(a) = &self.app {
             b = b.app(a.clone());
+        }
+        if let Some(t) = &self.title {
+            b = b.title(t.clone());
         }
         if let Some(k) = kind {
             b = b.kind(k);
@@ -77,6 +81,12 @@ pub fn run(args: RunArgs) -> ExitCode {
             return ExitCode::from(2);
         }
     }
+    if let Some(t) = &args.title
+        && let Err(e) = Report::builder(State::Working).title(t.clone()).try_build()
+    {
+        eprintln!("bellwether: --title: {e}");
+        return ExitCode::from(2);
+    }
     let rules = if args.pty {
         match preset::load_all()
             .and_then(|all| preset::select(&all, args.preset.as_deref(), &args.command))
@@ -105,6 +115,7 @@ pub fn run(args: RunArgs) -> ExitCode {
     let mut reporter = Reporter {
         sink,
         app,
+        title: args.title.clone(),
         id: ids.record.clone(),
     };
 

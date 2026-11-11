@@ -300,6 +300,60 @@ fn run_custom_flags() {
 }
 
 #[test]
+fn status_tables_a_run() {
+    let run = output(&[
+        "run",
+        "--stdout",
+        "--app",
+        "demo",
+        "--id",
+        "job",
+        "--title",
+        "Nap",
+        "--done-msg",
+        "Rested",
+        "--",
+        "true",
+    ]);
+    assert!(run.status.success());
+    let mut child = cmd(&["status"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(&run.stdout).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        "RECORD  STATE  PROGRESS  APP   STATUS\njob     done             demo  Nap: Rested\n"
+    );
+}
+
+#[test]
+fn run_title_goes_with_every_report() {
+    let (status, lines) = run_sh(
+        "true",
+        &["--app", "demo", "--title", "Nightly", "--msg", "Napping"],
+    );
+    assert!(status.success());
+    assert_eq!(
+        lines[0],
+        r#"{"state":"working","app":"demo","title":"Nightly","msg":"Napping"}"#
+    );
+    assert!(
+        lines[1].starts_with(r#"{"state":"done","app":"demo","title":"Nightly","msg":"#),
+        "{}",
+        lines[1]
+    );
+    // Too long: rejected before the command runs.
+    let long = "t".repeat(193);
+    let out = output(&["run", "--stdout", "--title", &long, "--", "true"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+}
+
+#[test]
 fn run_rejects_invalid_messages_before_running() {
     let dir = scratch();
     let marker = dir.join("ran");
@@ -886,7 +940,10 @@ fn pty_bad_presets_file_exits_2_without_running() {
 
     let out = output(&["run", "--pty", "--preset", "nope", "--", "true"]);
     assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("available: restic, sudo"));
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("available: restic, git, apt, dnf, rsync, cargo, sudo, ssh")
+    );
     // --preset only makes sense with --pty.
     assert_eq!(
         output(&["run", "--preset", "restic", "--", "true"])

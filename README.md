@@ -36,6 +36,7 @@ cargo install bellwether-cli
 ```sh
 bellwether run -- make test
 bellwether run --app restic --msg "Nightly backup" -- restic backup ~/Documents
+bellwether run --title "Nightly backup" -- ./backup.sh   # label the record
 ```
 
 **Report from a script.** Each `emit` writes one report:
@@ -59,7 +60,13 @@ bellwether run --pty -- restic backup ~/Documents
 ```sh
 bellwether probe                 # exit 0 supported, 1 not, 3 no terminal
 some-program | bellwether decode # one JSON line per report
+some-program | bellwether status # a table of the records, redrawn live
 ```
+
+`status` keeps each record's latest report, following the spec's rules for
+replacing, clearing and `app` inheritance, which is handy in terminals that
+don't show OSC 7501 themselves:
+`bellwether run --stdout -- make test | bellwether status`.
 
 ### Details
 
@@ -99,8 +106,21 @@ and window resizes follow. Along the way, bellwether reads the output:
   using (Claude Code, for example), bellwether moves to the child record
   `bellwether` so the two don't overwrite each other.
 
-Built-in presets: `restic` (progress and repository password prompt) and
-`sudo` (password prompts, always on). Add your own in
+Built-in presets:
+
+| Preset | Commands | Progress | Prompts |
+|---|---|---|---|
+| `restic` | `restic` | status line percent | repository password |
+| `git` | `git` | receiving/writing objects, deltas, files | HTTPS username and password |
+| `apt` | `apt`, `apt-get`, `aptitude` | downloads, dpkg's `Progress:` bar | `[Y/n]`, config-file `[default=N] ?` |
+| `dnf` | `dnf`, `dnf5`, `yum` | | `[y/N]` |
+| `rsync` | `rsync` | `--progress`, `--info=progress2` | |
+| `cargo` | `cargo` | `Building [==>  ] 45/120` | |
+| `sudo` | every command | | password |
+| `ssh` | every command | | key passphrase, PIN, password, unknown host key |
+
+`sudo` and `ssh` are always on, because their prompts turn up inside other
+commands (`git push`, `rsync host:`, build scripts). Add your own in
 `~/.config/bellwether/presets.toml` (`$XDG_CONFIG_HOME` is honoured). A preset
 with a built-in's name replaces it.
 
@@ -108,6 +128,7 @@ with a built-in's name replaces it.
 [deployer]
 commands = ["deploy", "deployer"]   # default: the preset's name
 progress = 'step [0-9]+ \(([0-9]+)%\)'   # first capture group = percent
+# or count steps: progress = '(?P<done>[0-9]+)/(?P<total>[0-9]+) steps'
 blocked = [
   { pattern = '\[y/N\]\s*$', kind = "question" },
   { pattern = '(?i)passphrase[^:]*:\s*$', kind = "auth", msg = "SSH key passphrase" },

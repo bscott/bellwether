@@ -7,6 +7,7 @@ mod preset;
 mod probe;
 mod pty;
 mod run;
+mod status;
 mod sys;
 mod watch;
 
@@ -65,15 +66,17 @@ With --pty the command runs in a pseudoterminal and bellwether watches its
 output. A preset's progress pattern sets the percentage, and its prompt
 patterns report `blocked` (kind auth or question) until you press Enter. Presets
 come from ~/.config/bellwether/presets.toml (or $XDG_CONFIG_HOME) and the
-built-ins `restic` and `sudo` (always on). The preset is picked by command name, or with
---preset. If the command sends its own OSC 7501 report for the record bellwether
-is using, bellwether moves to the child record `bellwether` beneath it.
+built-ins restic, git, apt, dnf, rsync and cargo, plus sudo and ssh, which are
+always on. The preset is picked by command name, or with --preset. If the
+command sends its own OSC 7501 report for the record bellwether is using,
+bellwether moves to the child record `bellwether` beneath it.
 
 Nested runs: bellwether sets BELLWETHER_PARENT_ID for the command, and a
 `bellwether run` that finds it reports on a child record (parent/app).
 
 Examples:
   bellwether run --app restic -- restic backup ~/Documents
+  bellwether run --title 'Nightly backup' -- ./backup.sh
   bellwether run --pty -- restic backup ~/Documents
   bellwether run --pty --preset restic -- ./backup.sh")]
     Run(RunArgs),
@@ -95,6 +98,18 @@ key for each sequence that was discarded. Other input is ignored.
 Example:
   printf '\\e]7501;state=working:msg=SGk=\\e\\\\' | bellwether decode")]
     Decode,
+
+    /// Show the records that the OSC 7501 reports on stdin add up to
+    #[command(after_help = "\
+Reads reports from stdin and keeps each record's latest status, following the
+spec's rules for replacing, clearing and app inheritance. On a terminal the
+table is redrawn as reports arrive. Otherwise it is printed once, at the end of
+input. Records keep their last report: nothing is dropped when input ends.
+
+Examples:
+  bellwether run --stdout -- make test | bellwether status
+  ./deploy-all.sh | bellwether status")]
+    Status,
 }
 
 #[derive(Args)]
@@ -167,6 +182,10 @@ struct RunArgs {
     #[arg(long)]
     error_msg: Option<String>,
 
+    /// Short label for the record, sent with every report (≤ 192 bytes)
+    #[arg(long)]
+    title: Option<String>,
+
     /// Record id to report on. Omit for the root record. When nested inside
     /// another `bellwether run`, it is relative to that run's record
     #[arg(long)]
@@ -222,6 +241,7 @@ fn main() -> ExitCode {
         Command::Run(args) => run::run(args),
         Command::Probe(args) => probe::probe(args),
         Command::Decode => decode::decode(),
+        Command::Status => status::status(),
     }
 }
 
